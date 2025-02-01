@@ -11,6 +11,8 @@ use rocket::http::Method;
 // use rocket::{get, routes};
 use rocket_cors::{AllowedOrigins, CorsOptions};
 
+use rocket::fs::{FileServer, relative};
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(crate = "rocket::serde")]
 struct Document {
@@ -103,7 +105,10 @@ fn rocket() -> _ {
     rocket::build()
         .manage(initial_docs)
         .attach(cors)
-        .mount("/", routes![
+        // Serve React static files
+        .mount("/", FileServer::from(relative!("/doc-manager-frontend/dist")))
+        // API Route
+        .mount("/api", routes![
             index,
             list_documents,
             get_document,
