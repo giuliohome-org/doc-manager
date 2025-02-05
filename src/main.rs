@@ -106,7 +106,7 @@ fn rocket() -> _ {
         .manage(initial_docs)
         .attach(cors)
         // Serve React static files
-        .mount("/", FileServer::from("/app/doc-manager-frontend/dist"))
+        .mount("/", FileServer::from("./frontend/dist"))
         // API Route
         .mount("/api", routes![
             index,

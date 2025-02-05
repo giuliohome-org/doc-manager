@@ -29,10 +29,10 @@ RUN apt-get install -y pkg-config libssl-dev
 # RUN apt-get install -y ca-certificates
 
 ## copy the main binary
-COPY --from=build /build/main ./
+COPY --from=build /build/main .
 
 ## copy runtime assets which may or may not exist
-COPY --from=build /build/doc-manager-frontend/dist/ ./doc-manager-frontend/dist
+COPY frontend/dist ./frontend/dist
 ##  COPY --from=build /build/Rocket.tom[l] ./static
 ##  COPY --from=build /build/stati[c] ./static
 ##  COPY --from=build /build/template[s] ./templates
