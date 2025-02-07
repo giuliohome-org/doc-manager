@@ -4,10 +4,13 @@ npm i
 npm run build
 cd ..
 
-sudo ctr run --net-host --rm --mount type=bind,src=$(pwd),dst=/workspace,options=rbind:rw gcr.io/kaniko-project/executor:latest kaniko-executor /kaniko/executor --dockerfile=/workspace/Dockerfile --context=/workspace --no-push --build-arg pkg=docs-app --tarPath=/workspace/doc-manager-v3.tar --destination=giuliohome/doc-manager:v3.0
+
+sudo ctr run --net-host --rm --mount type=bind,src=$(pwd),dst=/workspace,options=rbind:rw --mount type=bind,src=/kcache,dst=/cache,options=rbind:rw gcr.io/kaniko-project/warmer:latest kaniko-warmer /kaniko/warmer --cache-dir=/cache --image=docker.io/rust:1-slim-bookworm --skip-tls-verify-registry index.docker.io --dockerfile=/workspace/doc-manager-backend/Dockerfile
+
+sudo ctr run --net-host --rm --mount type=bind,src=$(pwd),dst=/workspace,options=rbind:rw --mount type=bind,src=/kcache,dst=/cache,options=rbind:rw gcr.io/kaniko-project/executor:latest kaniko-executor /kaniko/executor -cache-dir=/cache --dockerfile=/workspace/Dockerfile --context=/workspace --no-push --skip-tls-verify --build-arg pkg=docs-app --tarPath=/workspace/doc-manager-v3.1.tar --destination=giuliohome/doc-manager:v3.1
 
 sudo ctr image import doc-manager-v3.tar
-sudo ctr c create --net-host docker.io/giuliohome/doc-manager:v3.0 doc-manager
+sudo ctr c create --net-host docker.io/giuliohome/doc-manager:v3.1 doc-manager
 sudo ctr t start doc-manager
 ```
 
