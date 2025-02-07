@@ -4,6 +4,7 @@ npm i
 npm run build
 cd ..
 
+sudo mkdir /kcache
 sudo ctr i pull gcr.io/kaniko-project/warmer:latest
 sudo ctr run --net-host --rm --mount type=bind,src=$(pwd),dst=/workspace,options=rbind:rw --mount type=bind,src=/kcache,dst=/cache,options=rbind:rw gcr.io/kaniko-project/warmer:latest kaniko-warmer /kaniko/warmer --cache-dir=/cache --image=docker.io/rust:1-slim-bookworm --skip-tls-verify-registry index.docker.io --dockerfile=/workspace/Dockerfile
 
