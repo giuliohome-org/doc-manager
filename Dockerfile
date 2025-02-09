@@ -11,9 +11,9 @@ COPY . .
 RUN apt-get update -y
 RUN apt-get install -y pkg-config libssl-dev
 
-RUN apt-get install -y ca-certificates
-RUN cp ./MyRootCA.crt /usr/local/share/ca-certificates/
-RUN update-ca-certificates
+# RUN apt-get install -y ca-certificates
+# RUN cp ./MyRootCA.crt /usr/local/share/ca-certificates/
+# RUN update-ca-certificates
 
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
