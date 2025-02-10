@@ -29,7 +29,7 @@ FROM docker.io/debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update -y
-RUN apt-get install -y pkg-config libssl-dev
+RUN apt-get install -y pkg-config libssl-dev azure-cli
 
 ## copy the main binary
 COPY --from=build /build/main .
