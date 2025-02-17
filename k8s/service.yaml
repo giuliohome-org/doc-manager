@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: doc-manager-service
+  namespace: react
+spec:
+  selector:
+    app: doc-manager
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080

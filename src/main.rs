@@ -1,10 +1,11 @@
 #[macro_use] extern crate rocket;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use azure_storage::StorageCredentials;
+use azure_storage_blobs::prelude::*;
 
 use rocket::serde::{json::Json, Serialize, Deserialize};
 use rocket::State;
+use std::env;
 use uuid::Uuid;
 
 use rocket::http::Method;
@@ -12,6 +13,8 @@ use rocket::http::Method;
 use rocket_cors::{AllowedOrigins, CorsOptions};
 
 use rocket::fs::{FileServer};
+
+use futures::stream::StreamExt;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(crate = "rocket::serde")]
@@ -32,7 +35,10 @@ struct UpdateDocumentRequest {
     content: String,
 }
 
-type Documents = Arc<Mutex<HashMap<String, Document>>>;
+struct AzureClient {
+    container_client: ContainerClient,
+}
+
 
 #[get("/")]
 fn index() -> &'static str {
@@ -40,58 +46,102 @@ fn index() -> &'static str {
 }
 
 #[get("/documents")]
-fn list_documents(docs: &State<Documents>) -> Json<Vec<Document>> {
-    let docs_map = docs.lock().unwrap();
-    let documents: Vec<Document> = docs_map.values().cloned().collect();
+async fn list_documents(client: &State<AzureClient>) -> Json<Vec<Document>> {
+    let mut documents = Vec::new();
+    
+    let blob_list = client.container_client.list_blobs().into_stream().next().await.unwrap().unwrap();
+    
+    for blob in blob_list.blobs.blobs() {
+        let blob_client = client.container_client.blob_client(blob.name.clone());
+        let content = blob_client.get_content().await.unwrap();
+        documents.push(Document {
+            id: blob.name.clone(),
+            content: String::from_utf8(content).unwrap(),
+        });
+    }
+
     Json(documents)
 }
 
+
 #[get("/documents/<id>")]
-fn get_document(id: String, docs: &State<Documents>) -> Option<Json<Document>> {
-    let docs_map = docs.lock().unwrap();
-    docs_map.get(&id).map(|doc| Json(doc.clone()))
+async fn get_document(id: String, client: &State<AzureClient>) -> Option<Json<Document>> {
+    let blob_client = client.container_client.blob_client(&id);
+    match blob_client.get_content().await {
+        Ok(content) => Some(Json(Document {
+            id,
+            content: String::from_utf8(content).unwrap(),
+        })),
+        Err(_) => None,
+    }
 }
 
-#[post("/documents", format = "json", data = "<request>")]
-fn create_document(request: Json<NewDocumentRequest>, docs: &State<Documents>) -> Json<Document> {
-    let id = Uuid::new_v4().to_string();
-    let new_doc = Document {
-        id: id.clone(),
-        content: request.content.clone(),
-    };
 
-    let mut docs_map = docs.lock().unwrap();
-    docs_map.insert(id, new_doc.clone());
-    Json(new_doc)
+#[post("/documents", format = "json", data = "<request>")]
+async fn create_document(request: Json<NewDocumentRequest>, client: &State<AzureClient>) -> Json<Document> {
+    let id = Uuid::new_v4().to_string();
+    let content = request.content.as_bytes().to_vec();
+    
+    let blob_client = client.container_client.blob_client(&id);
+    blob_client.put_block_blob(content).await.unwrap();
+
+    Json(Document {
+        id,
+        content: request.content.clone(),
+    })
 }
 
 #[put("/documents/<id>", format = "json", data = "<request>")]
-fn update_document(
+async fn update_document(
     id: String,
     request: Json<UpdateDocumentRequest>,
-    docs: &State<Documents>,
+    client: &State<AzureClient>,
 ) -> Option<Json<Document>> {
-    let mut docs_map = docs.lock().unwrap();
-    if let Some(doc) = docs_map.get_mut(&id) {
-        doc.content = request.content.clone();
-        return Some(Json(doc.clone()));
+    let blob_client = client.container_client.blob_client(&id);
+    let content = request.content.as_bytes().to_vec();
+    
+    match blob_client.put_block_blob(content).await {
+        Ok(_) => Some(Json(Document {
+            id,
+            content: request.content.clone(),
+        })),
+        Err(_) => None,
     }
-    None
 }
 
 #[delete("/documents/<id>")]
-fn delete_document(id: String, docs: &State<Documents>) -> Option<Json<&'static str>> {
-    let mut docs_map = docs.lock().unwrap();
-    if docs_map.remove(&id).is_some() {
-        Some(Json("Document deleted successfully"))
-    } else {
-        None
+async fn delete_document(id: String, client: &State<AzureClient>) -> Option<Json<&'static str>> {
+    let blob_client = client.container_client.blob_client(&id);
+    match blob_client.delete().await {
+        Ok(_) => Some(Json("Document deleted successfully")),
+        Err(_) => None,
     }
 }
 
 #[launch]
-fn rocket() -> _ {
-    let initial_docs = Documents::default();
+async fn rocket() -> _ {
+    let account = env::var("AZURE_STORAGE_ACCOUNT").expect("AZURE_STORAGE_ACCOUNT not set");
+    let access_key = env::var("AZURE_STORAGE_ACCESS_KEY").expect("AZURE_STORAGE_ACCESS_KEY not set");
+    let container_name = "documents";
+
+    let storage_credentials = StorageCredentials::access_key(account.clone(), access_key);
+    let blob_service_client = BlobServiceClient::new(account, storage_credentials);
+    let container_client = blob_service_client.container_client(container_name);
+    
+    // Check if the container exists
+    match container_client.get_properties().await {
+        Ok(_) => {
+            // Container exists, no need to create it
+            println!("Container already exists.");
+        }
+        Err(_) => {
+            // Container doesn't exist, create it
+            println!("Container does not exist. Creating...");
+            container_client.create().await.unwrap(); // Handle unwrap appropriately
+        }
+    }
+
+    let azure_client = AzureClient { container_client };
     
     let cors = CorsOptions {
         allowed_origins: AllowedOrigins::all(),
@@ -103,7 +153,7 @@ fn rocket() -> _ {
     .expect("CORS configuration failed");
     
     rocket::build()
-        .manage(initial_docs)
+        .manage(azure_client)
         .attach(cors)
         // Serve React static files
         .mount("/", FileServer::from("./frontend/dist"))

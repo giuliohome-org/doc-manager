@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doc-manager
+  namespace: react
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: doc-manager
+  template:
+    metadata:
+      labels:
+        app: doc-manager
+    spec:
+      containers:
+      - name: doc-manager
+        image: giuliohome/doc-manager:v4.1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: AZURE_STORAGE_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: doc-manager-secret
+              key: access-key
+        - name: AZURE_STORAGE_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: doc-manager-secret
+              key: account
