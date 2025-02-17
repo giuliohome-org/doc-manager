@@ -1,9 +1,17 @@
 import { useState, useEffect } from 'react';
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from '@tanstack/react-query'
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import './App.css'
 
+const queryClient = new QueryClient()
+
 function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <Router>
       <div className="min-h-screen bg-gray-100">
         <nav className="bg-white shadow-lg">
@@ -31,35 +39,41 @@ function App() {
         </Routes>
       </div>
     </Router>
+    </QueryClientProvider>
   );
 }
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
 
 function DocumentList() {
-  const [documents, setDocuments] = useState([]);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetch(`${backendUrl}/documents`)
-      .then(res => res.json())
-      .then(data => {
-        setDocuments(data);
-        setLoading(false);
-      });
-  }, []);
+  const { isPending, error, data, isFetching } = useQuery({
+    queryKey: ['docData'],
+    queryFn: async () => {
+      const response = await fetch(
+        `${backendUrl}/documents`,
+      )
+      return await response.json()
+    },
+  })
+
+  if (isPending) return <div className="text-center py-8">Loading...</div>;
+  if (error) return <div className="text-center py-8">'An error has occurred: ' + error.message</div>;
+  
+  if (isFetching) return <div className="text-center py-8">Fetching...</div>;
+  if (!data) return <div className="text-center py-8">No documents found</div>;
 
   const deleteDocument = (id) => {
     fetch(`${backendUrl}/documents/${id}`, { method: 'DELETE' })
       .then(() => setDocuments(docs => docs.filter(d => d.id !== id)));
   };
 
-  if (loading) return <div className="text-center py-8">Loading...</div>;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
+      <div>{isFetching ? 'Updating...' : ''}</div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {documents.map(doc => (
+        {data.map(doc => (
           <div key={doc.id} 
                 style={{ colorScheme: 'light' }}
 		className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow text-black">
