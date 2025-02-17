@@ -1,3 +1,16 @@
+# Stage 1: Build the frontend
+FROM node:22-slim AS frontend-build
+
+WORKDIR /frontend
+
+COPY frontend/package*.json ./
+RUN npm install
+
+COPY frontend/ ./
+RUN npm run build
+
+################################################################################
+# Stage 2: Build the Rust application
 FROM docker.io/rust:1-slim-bookworm AS build
 
 ## cargo package name: customize here or provide via --build-arg
@@ -11,9 +24,10 @@ COPY . .
 RUN apt-get update -y
 RUN apt-get install -y pkg-config libssl-dev
 
-# RUN apt-get install -y ca-certificates
-# RUN cp ./MyRootCA.crt /usr/local/share/ca-certificates/
-# RUN update-ca-certificates
+## for Enterprise CAs
+## RUN apt-get install -y ca-certificates
+## RUN cp ./MyRootCA.crt /usr/local/share/ca-certificates/
+## RUN update-ca-certificates
 
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
@@ -35,7 +49,7 @@ RUN apt-get install -y pkg-config libssl-dev ca-certificates
 COPY --from=build /build/main .
 
 ## copy runtime assets which may or may not exist
-COPY frontend/dist ./frontend/dist
+COPY -from=frontend-build frontend/dist ./frontend/dist
 ##  COPY --from=build /build/Rocket.tom[l] ./static
 ##  COPY --from=build /build/stati[c] ./static
 ##  COPY --from=build /build/template[s] ./templates
