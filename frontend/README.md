@@ -2,16 +2,16 @@
 
 # Backend
 
-Set env keys `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_ACCESS_KEY`
+Set env vars `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_ACCESS_KEY`
 ```sh
 cargo run
 ```
 
 # Frontend
 
+Set env var `VITE_BACKEND_URL` as `http://localhost:8000/api`
 ```sh
 cd frontend
-set VITE_BACKEND_URL=http://localhost:8000/api
 npm run dev
 ```
 
