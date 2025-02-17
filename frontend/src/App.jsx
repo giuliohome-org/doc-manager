@@ -59,16 +59,19 @@ function DocumentList() {
 
   if (isPending) return <div className="text-center py-8">Loading...</div>;
   if (error) return <div className="text-center py-8">{error.message}</div>;
+  if (isFetching) return <div className="text-center py-8">Updating...</div>;
   
+
   const deleteDocument = (id) => {
     fetch(`${backendUrl}/documents/${id}`, { method: 'DELETE' })
-      .then(() => setDocuments(docs => docs.filter(d => d.id !== id)));
+      .then(() => 
+        window.location.href = '/'
+    );
   };
 
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      <div>{isFetching ? 'Updating...' : ''}</div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {data.map(doc => (
           <div key={doc.id} 
@@ -106,42 +109,7 @@ function DocumentList() {
   );
 }
 
-function DocumentEditor({ match }) {
-  const [isNew] = useState(!window.location.pathname.includes('edit'));
-  const id = window.location.pathname.split('/').pop();
-
-  const { isPending, error, data, isFetching } = useQuery({
-    queryKey: ['singleDocData_' + id],
-    queryFn: async () => {
-      if (isNew) {
-        return {}
-      }
-      const response = await fetch(
-        `${backendUrl}/documents/${id}`,
-      )
-      return await response.json()
-    },
-  })
-
-  if (isPending) return <div className="text-center py-8">Loading...</div>;
-  if (error) return <div className="text-center py-8">{error.message}</div>;
-
-  const [content, setContent] = useState(data.content??{});
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const url = isNew ? `${backendUrl}/documents` : `${backendUrl}/documents/${id}`;
-    const method = isNew ? 'POST' : 'PUT';
-
-    fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    }).then(() => {
-      window.location.href = '/';
-    });
-  };
-
+function DocEditRender(content, handleSubmit, isNew, setContent, setEditing) {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <form onSubmit={handleSubmit}
@@ -150,10 +118,12 @@ function DocumentEditor({ match }) {
 	  className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
-        <div>{isFetching ? 'Updating...' : ''}</div>
         <textarea  style={{ colorScheme: 'light' }}
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => {
+            setEditing(true)
+            setContent(e.target.value)
+          }}
           className="w-full h-64 p-4 border rounded-lg mb-6 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
           placeholder="Start writing your document here..."
         />
@@ -183,6 +153,56 @@ function DocumentEditor({ match }) {
   );
 }
 
+function DocumentEditor({ match }) {
+  
+  const [content, setContent] = useState('')
+  const [isNew] = useState(!window.location.pathname.includes('edit'))
+  const [editing, setEditing] = useState(false)
+  const id = window.location.pathname.split('/').pop()
+
+  const { isPending, error, data, isFetching } = useQuery({
+    queryKey: ['singleDocData_'+id],
+    queryFn: async () => {
+      if (isNew || editing) {
+        console.info("enters isnew", isNew)
+        return  {"content": content} 
+      }
+      const response = await fetch(
+        `${backendUrl}/documents/${id}`,
+      )
+      const retrieved = await response.json()
+      return {"content": retrieved.content}
+    },
+  })
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const url = isNew ? `${backendUrl}/documents` : `${backendUrl}/documents/${id}`;
+    const method = isNew ? 'POST' : 'PUT';
+    setEditing(false)
+
+    fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(  {"content": content} ),
+    }).then(() => {
+      window.location.href = '/';
+    });
+  };
+
+  if (data && !isFetching && !isPending && !error && content != data.content && !editing) {
+    setContent(data.content);
+    return DocEditRender(data.content, handleSubmit, isNew, setContent, setEditing);
+  }
+
+  if (isPending) return <div className="text-center py-8">Loading...</div>;
+  if (error) return <div className="text-center py-8">{error.message}</div>;
+  if (isFetching) return <div className="text-center py-8">Updating...</div>;
+
+  return DocEditRender((editing ? content : data.content), handleSubmit, isNew, setContent, setEditing);
+
+}
+
 function DocumentViewer() {
   const id = window.location.pathname.split('/').pop();
 
@@ -198,6 +218,7 @@ function DocumentViewer() {
 
   if (isPending) return <div className="text-center py-8">Loading...</div>;
   if (error) return <div className="text-center py-8">{error.message}</div>;
+  if (isFetching) return <div className="text-center py-8">Updating...</div>;
 
   const doc = data
 
@@ -214,7 +235,6 @@ function DocumentViewer() {
           >
             Edit
           </Link>
-        <div>{isFetching ? 'Updating...' : ''}</div>
         </div>
         <pre style={{ colorScheme: 'light' }} 
 	  className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
