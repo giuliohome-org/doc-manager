@@ -13,7 +13,7 @@ RUN npm install
 # Copy the rest of the application code
 COPY . .
 
-ENV VITE_BACKEND_URL=http://localhost:8000
+ENV VITE_BACKEND_URL=http://localhost:8000/api
 
 # Build the application
 RUN npm run build
