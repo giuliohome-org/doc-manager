@@ -48,7 +48,7 @@ const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
 function DocumentList() {
 
   const { isPending, error, data, isFetching } = useQuery({
-    queryKey: ['docData'],
+    queryKey: ['docListData'],
     queryFn: async () => {
       const response = await fetch(
         `${backendUrl}/documents`,
@@ -107,17 +107,26 @@ function DocumentList() {
 }
 
 function DocumentEditor({ match }) {
-  const [content, setContent] = useState('');
   const [isNew] = useState(!window.location.pathname.includes('edit'));
   const id = window.location.pathname.split('/').pop();
 
-  useEffect(() => {
-    if (!isNew) {
-      fetch(`${backendUrl}/documents/${id}`)
-        .then(res => res.json())
-        .then(data => setContent(data.content));
-    }
-  }, [id, isNew]);
+  const { isPending, error, data, isFetching } = useQuery({
+    queryKey: ['singleDocData_' + id],
+    queryFn: async () => {
+      if (isNew) {
+        return {}
+      }
+      const response = await fetch(
+        `${backendUrl}/documents/${id}`,
+      )
+      return await response.json()
+    },
+  })
+
+  if (isPending) return <div className="text-center py-8">Loading...</div>;
+  if (error) return <div className="text-center py-8">{error.message}</div>;
+
+  const content = data.content
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -141,6 +150,7 @@ function DocumentEditor({ match }) {
 	  className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
+        <div>{isFetching ? 'Updating...' : ''}</div>
         <textarea  style={{ colorScheme: 'light' }}
           value={content}
           onChange={(e) => setContent(e.target.value)}
@@ -174,16 +184,22 @@ function DocumentEditor({ match }) {
 }
 
 function DocumentViewer() {
-  const [doc, setDoc] = useState(null);
   const id = window.location.pathname.split('/').pop();
 
-  useEffect(() => {
-    fetch(`${backendUrl}/documents/${id}`)
-      .then(res => res.json())
-      .then(data => setDoc(data));
-  }, [id]);
+  const { isPending, error, data, isFetching } = useQuery({
+    queryKey: ['singleDocData_' + id],
+    queryFn: async () => {
+      const response = await fetch(
+        `${backendUrl}/documents/${id}`,
+      )
+      return await response.json()
+    },
+  })
 
-  if (!doc) return <div className="text-center py-8">Loading...</div>;
+  if (isPending) return <div className="text-center py-8">Loading...</div>;
+  if (error) return <div className="text-center py-8">{error.message}</div>;
+
+  const doc = data
 
   return (
     <div 
@@ -198,6 +214,7 @@ function DocumentViewer() {
           >
             Edit
           </Link>
+        <div>{isFetching ? 'Updating...' : ''}</div>
         </div>
         <pre style={{ colorScheme: 'light' }} 
 	  className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
