@@ -3,7 +3,20 @@ cd frontend
 npm i
 npm run build
 cd ..
+```
 
+## Using docker engine on Gitpod
+
+```sh
+docker build -t giuliohome/doc-manager:v4.1.1 .
+export AZURE_STORAGE_ACCOUNT=youraccount
+export AZURE_STORAGE_ACCESS_KEY=yourkey
+docker run -p 8080:8080 -e AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT -e AZURE_STORAGE_ACCESS_KEY=$AZURE_STORAGE_ACCESS_KEY giuliohome/doc-manager:v4.1.1
+```
+
+## TL:DR; Using containerd and kaniko
+
+```
 sudo mkdir /kcache
 sudo ctr i pull gcr.io/kaniko-project/warmer:latest
 sudo ctr run --net-host --rm --mount type=bind,src=$(pwd),dst=/workspace,options=rbind:rw --mount type=bind,src=/kcache,dst=/cache,options=rbind:rw gcr.io/kaniko-project/warmer:latest kaniko-warmer /kaniko/warmer --cache-dir=/cache --image=docker.io/rust:1-slim-bookworm --skip-tls-verify-registry index.docker.io --dockerfile=/workspace/Dockerfile
