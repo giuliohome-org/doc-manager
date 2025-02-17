@@ -60,9 +60,6 @@ function DocumentList() {
   if (isPending) return <div className="text-center py-8">Loading...</div>;
   if (error) return <div className="text-center py-8">'An error has occurred: ' + error.message</div>;
   
-  if (isFetching) return <div className="text-center py-8">Fetching...</div>;
-  if (!data) return <div className="text-center py-8">No documents found</div>;
-
   const deleteDocument = (id) => {
     fetch(`${backendUrl}/documents/${id}`, { method: 'DELETE' })
       .then(() => setDocuments(docs => docs.filter(d => d.id !== id)));
