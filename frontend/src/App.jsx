@@ -58,7 +58,7 @@ function DocumentList() {
   })
 
   if (isPending) return <div className="text-center py-8">Loading...</div>;
-  if (error) return <div className="text-center py-8">'An error has occurred: ' + error.message</div>;
+  if (error) return <div className="text-center py-8">{error.message}</div>;
   
   const deleteDocument = (id) => {
     fetch(`${backendUrl}/documents/${id}`, { method: 'DELETE' })
