@@ -126,7 +126,7 @@ function DocumentEditor({ match }) {
   if (isPending) return <div className="text-center py-8">Loading...</div>;
   if (error) return <div className="text-center py-8">{error.message}</div>;
 
-  const content = data.content
+  const [content, setContent] = useState(data.content??{});
 
   const handleSubmit = (e) => {
     e.preventDefault();
