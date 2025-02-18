@@ -65,11 +65,11 @@ async fn list_documents(client: &State<AzureClient>) -> Json<Vec<Document>> {
 
 
 #[get("/documents/<id>")]
-async fn get_document(id: String, client: &State<AzureClient>) -> Option<Json<Document>> {
-    let blob_client = client.container_client.blob_client(&id);
+async fn get_document(id: &str, client: &State<AzureClient>) -> Option<Json<Document>> {
+    let blob_client = client.container_client.blob_client(id);
     match blob_client.get_content().await {
         Ok(content) => Some(Json(Document {
-            id,
+            id: id.to_string(),
             content: String::from_utf8(content).unwrap(),
         })),
         Err(_) => None,
@@ -93,16 +93,16 @@ async fn create_document(request: Json<NewDocumentRequest>, client: &State<Azure
 
 #[put("/documents/<id>", format = "json", data = "<request>")]
 async fn update_document(
-    id: String,
+    id: &str,
     request: Json<UpdateDocumentRequest>,
     client: &State<AzureClient>,
 ) -> Option<Json<Document>> {
-    let blob_client = client.container_client.blob_client(&id);
+    let blob_client = client.container_client.blob_client(id);
     let content = request.content.as_bytes().to_vec();
     
     match blob_client.put_block_blob(content).await {
         Ok(_) => Some(Json(Document {
-            id,
+            id: id.to_string(),
             content: request.content.clone(),
         })),
         Err(_) => None,
