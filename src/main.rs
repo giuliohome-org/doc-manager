@@ -110,8 +110,8 @@ async fn update_document(
 }
 
 #[delete("/documents/<id>")]
-async fn delete_document(id: String, client: &State<AzureClient>) -> Option<Json<&'static str>> {
-    let blob_client = client.container_client.blob_client(&id);
+async fn delete_document(id: &str, client: &State<AzureClient>) -> Option<Json<&'static str>> {
+    let blob_client = client.container_client.blob_client(id);
     match blob_client.delete().await {
         Ok(_) => Some(Json("Document deleted successfully")),
         Err(_) => None,
