@@ -164,7 +164,6 @@ function DocumentEditor({ match }) {
     queryKey: ['singleDocData_'+id],
     queryFn: async () => {
       if (isNew || editing) {
-        console.info("enters isnew", isNew)
         return  {"content": content} 
       }
       const response = await fetch(
