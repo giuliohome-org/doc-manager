@@ -122,6 +122,7 @@ async fn delete_document(id: &str, client: &State<AzureClient>) -> Option<Json<&
 async fn rocket() -> _ {
     let account = env::var("AZURE_STORAGE_ACCOUNT").expect("AZURE_STORAGE_ACCOUNT not set");
     let access_key = env::var("AZURE_STORAGE_ACCESS_KEY").expect("AZURE_STORAGE_ACCESS_KEY not set");
+    let exact_origin = env::var("RUST_ROCKET_EXACT_ORIGIN").expect("RUST_ROCKET_EXACT_ORIGIN not set");
     let container_name = "documents";
 
     let storage_credentials = StorageCredentials::access_key(account.clone(), access_key);
@@ -145,10 +146,11 @@ async fn rocket() -> _ {
     
     let cors = CorsOptions {
         allowed_origins:
-        AllowedOrigins::some_exact(&[ // 3.
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8000",
-        "https://doc-manager.giuliohome.org",
+        AllowedOrigins::some_exact(&[ //
+        // "http://localhost:5173",
+        // "http://127.0.0.1:8000",
+        // "https://doc-manager.giuliohome.org",
+        exact_origin
         ]),
         allowed_methods: vec![Method::Get, Method::Post, Method::Put, Method::Delete].into_iter().map(From::from).collect(),
         allow_credentials: true,
