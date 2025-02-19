@@ -144,7 +144,12 @@ async fn rocket() -> _ {
     let azure_client = AzureClient { container_client };
     
     let cors = CorsOptions {
-        allowed_origins: AllowedOrigins::all(),
+        allowed_origins:
+        AllowedOrigins::some_exact(&[ // 3.
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+        "https://doc-manager.giuliohome.org",
+        ]),
         allowed_methods: vec![Method::Get, Method::Post, Method::Put, Method::Delete].into_iter().map(From::from).collect(),
         allow_credentials: true,
         ..Default::default()
