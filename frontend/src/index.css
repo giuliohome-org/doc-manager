@@ -67,4 +67,8 @@ button:focus-visible {
   }
 }
 
+.text-white-custom {
+  color: #ffffff !important;
+}
+
 @import "tailwindcss";

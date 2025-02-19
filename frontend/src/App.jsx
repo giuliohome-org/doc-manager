@@ -23,7 +23,7 @@ function App() {
               </Link>
               <Link
                 to="/new"
-                className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors"
+                className="bg-blue-500 hover:bg-blue-600 text-white-custom px-4 py-2 rounded-lg transition-colors"
               >
                 New Document
               </Link>
