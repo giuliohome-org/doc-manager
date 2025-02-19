@@ -10,5 +10,7 @@ tasks:
       npm i
       npm run build
       cd ..
-      echo set the env vars described in the README 
-    command: cargo run
+      echo set the AZURE STORAGE env vars described in the README 
+    command: |
+      export RUST_ROCKET_EXACT_ORIGIN=$(gp url 8000)
+      cargo run
