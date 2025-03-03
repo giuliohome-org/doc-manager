@@ -133,8 +133,9 @@ function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, fil
           </Link>
           <button
             type="submit"
+            disabled={!content.trim()} // Disable button if content is empty
             style={{
-              backgroundColor: "#000000", // Explicitly force black
+              backgroundColor: content.trim() ? "#000000" : "#cccccc", // Change color if disabled
               color: "#FFFFFF", // Explicitly force white text
               WebkitAppearance: "none", // Prevents automatic styling in some browsers
               MozAppearance: "none",
