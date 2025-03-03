@@ -6,13 +6,15 @@ use rocket::serde::{json::Json, Serialize, Deserialize};
 use rocket::State;
 use std::env;
 use uuid::Uuid;
-use rocket::http::Method;
+use rocket::http::{ContentType, Header, Method};
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use rocket::fs::{FileServer};
 use futures::stream::StreamExt;
 use rocket::form::Form;
 use rocket::fs::TempFile;
-use rocket::response::content::RawText;
+use rocket::response::Responder;
+use rocket::Request;
+use rocket::Response;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(crate = "rocket::serde")]
@@ -139,11 +141,29 @@ async fn delete_document(id: &str, client: &State<AzureClient>) -> Option<Json<&
     }
 }
 
+struct DownloadResponse {
+    content: String,
+    filename: String,
+}
+
+impl<'r> Responder<'r, 'static> for DownloadResponse {
+    fn respond_to(self, _: &'r Request<'_>) -> rocket::response::Result<'static> {
+        Response::build()
+            .header(ContentType::Plain)
+            .header(Header::new("Content-Disposition", format!("attachment; filename=\"{}\"", self.filename)))
+            .sized_body(self.content.len(), std::io::Cursor::new(self.content))
+            .ok()
+    }
+}
+
 #[get("/documents/download/<id>")]
-async fn download_document(id: &str, client: &State<AzureClient>) -> Option<RawText<String>> {
+async fn download_document(id: &str, client: &State<AzureClient>) -> Option<DownloadResponse> {
     let blob_client = client.container_client.blob_client(id);
     match blob_client.get_content().await {
-        Ok(content) => Some(RawText(String::from_utf8(content).unwrap())),
+        Ok(content) => Some(DownloadResponse {
+            content: String::from_utf8(content).unwrap(),
+            filename: format!("{}.txt", id),
+        }),
         Err(_) => None,
     }
 }
