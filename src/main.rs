@@ -2,43 +2,35 @@
 
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::*;
-
 use rocket::serde::{json::Json, Serialize, Deserialize};
 use rocket::State;
 use std::env;
 use uuid::Uuid;
-
 use rocket::http::Method;
-// use rocket::{get, routes};
 use rocket_cors::{AllowedOrigins, CorsOptions};
-
 use rocket::fs::{FileServer};
-
 use futures::stream::StreamExt;
+use rocket::form::Form;
+use rocket::fs::TempFile;
+use rocket::response::content::RawText;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(crate = "rocket::serde")]
 struct Document {
     id: String,
     content: String,
+    file_url: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct NewDocumentRequest {
-    content: String,
-}
-
-#[derive(Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct UpdateDocumentRequest {
-    content: String,
+#[derive(FromForm)]
+struct DocumentForm<'r> {
+    content: &'r str,
+    file: Option<TempFile<'r>>,
 }
 
 struct AzureClient {
     container_client: ContainerClient,
 }
-
 
 #[get("/")]
 fn index() -> &'static str {
@@ -46,65 +38,94 @@ fn index() -> &'static str {
 }
 
 #[get("/documents")]
-async fn list_documents(client: &State<AzureClient>) -> Json<Vec<Document>> {
+async fn list_documents(client: &State<AzureClient>) -> Result<Json<Vec<Document>>, String> {
     let mut documents = Vec::new();
     
-    let blob_list = client.container_client.list_blobs().into_stream().next().await.unwrap().unwrap();
+    let blob_list = match client.container_client.list_blobs().into_stream().next().await {
+        Some(Ok(blob_list)) => blob_list,
+        Some(Err(e)) => return Err(format!("Failed to list blobs: {}", e)),
+        None => return Err("No blobs found".to_string()),
+    };
     
     for blob in blob_list.blobs.blobs() {
         let blob_client = client.container_client.blob_client(blob.name.clone());
-        let content = blob_client.get_content().await.unwrap();
+        let content = blob_client.get_content().await
+            .map_err(|e| format!("Failed to get blob content: {}", e))?;
         documents.push(Document {
             id: blob.name.clone(),
-            content: String::from_utf8(content).unwrap(),
+            content: String::from_utf8(content).map_err(|e| format!("Failed to parse content: {}", e))?,
+            file_url: None, // Update this if you store file URLs separately
         });
     }
 
-    Json(documents)
+    Ok(Json(documents))
 }
-
 
 #[get("/documents/<id>")]
 async fn get_document(id: &str, client: &State<AzureClient>) -> Option<Json<Document>> {
     let blob_client = client.container_client.blob_client(id);
     match blob_client.get_content().await {
-        Ok(content) => Some(Json(Document {
-            id: id.to_string(),
-            content: String::from_utf8(content).unwrap(),
-        })),
+        Ok(content) => {
+            let file_url = blob_client.url().ok().map(|url| url.to_string());
+            Some(Json(Document {
+                id: id.to_string(),
+                content: String::from_utf8(content).unwrap(),
+                file_url, // Return the file URL
+            }))
+        },
         Err(_) => None,
     }
 }
 
-
-#[post("/documents", format = "json", data = "<request>")]
-async fn create_document(request: Json<NewDocumentRequest>, client: &State<AzureClient>) -> Json<Document> {
+#[post("/documents", data = "<form>")]
+async fn create_document(mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Json<Document> {
     let id = Uuid::new_v4().to_string();
-    let content = request.content.as_bytes().to_vec();
+    let content = form.content.as_bytes().to_vec();
     
     let blob_client = client.container_client.blob_client(&id);
     blob_client.put_block_blob(content).await.unwrap();
 
+    let mut file_url = None;
+    if let Some(mut file) = form.file.take() {
+        let file_name = format!("{}_{}", id, file.name().unwrap_or("file"));
+        let file_blob_client = client.container_client.blob_client(&file_name);
+        file.persist_to(&file_name).await.unwrap();
+        let file_content = std::fs::read(&file_name).unwrap();
+        file_blob_client.put_block_blob(file_content).await.unwrap();
+        std::fs::remove_file(&file_name).unwrap();
+        file_url = Some(file_blob_client.url().unwrap().to_string());
+    }
+
     Json(Document {
         id,
-        content: request.content.clone(),
+        content: form.content.to_string(),
+        file_url, // Return the file URL if a file is uploaded
     })
 }
 
-#[put("/documents/<id>", format = "json", data = "<request>")]
-async fn update_document(
-    id: &str,
-    request: Json<UpdateDocumentRequest>,
-    client: &State<AzureClient>,
-) -> Option<Json<Document>> {
+#[put("/documents/<id>", data = "<form>")]
+async fn update_document(id: &str, mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Option<Json<Document>> {
     let blob_client = client.container_client.blob_client(id);
-    let content = request.content.as_bytes().to_vec();
+    let content = form.content.as_bytes().to_vec();
     
     match blob_client.put_block_blob(content).await {
-        Ok(_) => Some(Json(Document {
-            id: id.to_string(),
-            content: request.content.clone(),
-        })),
+        Ok(_) => {
+            let mut file_url = None;
+            if let Some(mut file) = form.file.take() {
+                let file_name = format!("{}_{}", id, file.name().unwrap_or("file"));
+                let file_blob_client = client.container_client.blob_client(&file_name);
+                file.persist_to(&file_name).await.unwrap();
+                let file_content = std::fs::read(&file_name).unwrap();
+                file_blob_client.put_block_blob(file_content).await.unwrap();
+                std::fs::remove_file(&file_name).unwrap();
+                file_url = Some(file_blob_client.url().unwrap().to_string());
+            }
+            Some(Json(Document {
+                id: id.to_string(),
+                content: form.content.to_string(),
+                file_url, // Return the file URL if a file is uploaded
+            }))
+        },
         Err(_) => None,
     }
 }
@@ -114,6 +135,15 @@ async fn delete_document(id: &str, client: &State<AzureClient>) -> Option<Json<&
     let blob_client = client.container_client.blob_client(id);
     match blob_client.delete().await {
         Ok(_) => Some(Json("Document deleted successfully")),
+        Err(_) => None,
+    }
+}
+
+#[get("/documents/download/<id>")]
+async fn download_document(id: &str, client: &State<AzureClient>) -> Option<RawText<String>> {
+    let blob_client = client.container_client.blob_client(id);
+    match blob_client.get_content().await {
+        Ok(content) => Some(RawText(String::from_utf8(content).unwrap())),
         Err(_) => None,
     }
 }
@@ -171,6 +201,7 @@ async fn rocket() -> _ {
             get_document,
             create_document,
             update_document,
-            delete_document
+            delete_document,
+            download_document
         ])
 }
