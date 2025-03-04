@@ -117,7 +117,7 @@ function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, fil
           className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
-        <textarea style={{ colorScheme: 'light' }}
+        <textarea style={{ colorScheme: 'light', textAlign: 'left' }}
           value={content}
           onChange={(e) => {
             setEditing(true);
@@ -220,7 +220,7 @@ function DocumentEditor() {
           className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
-        <textarea style={{ colorScheme: 'light' }}
+        <textarea style={{ colorScheme: 'light', textAlign: 'left' }}
           value={content}
           onChange={(e) => {
             setEditing(true);
@@ -300,7 +300,7 @@ function DocumentViewer() {
           Download {doc.is_binary ? 'Binary File' : 'Text File'}
         </a>
         {!doc.is_binary && (
-          <pre style={{ colorScheme: 'light' }} 
+          <pre style={{ colorScheme: 'light', textAlign: 'left' }} 
             className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
         )}
       </div>
