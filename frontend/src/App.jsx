@@ -89,8 +89,13 @@ function DocumentList() {
                 </button>
               </div>
             </div>
-            <p style={{ colorScheme: 'light' }}
-              className="text-gray-600 line-clamp-3 mb-4">{doc.content}</p>
+            <a href={`${backendUrl}/documents/download/${doc.id}`} className="text-blue-500 hover:text-blue-600">
+              Download {doc.is_binary ? 'Binary File' : 'Text File'}
+            </a>
+            {!doc.is_binary && (
+              <p style={{ colorScheme: 'light' }}
+                className="text-gray-600 line-clamp-3 mb-4">{doc.content}</p>
+            )}
             <Link style={{ colorScheme: 'light' }}
               to={`/view/${doc.id}`}
               className="text-gray-500 hover:text-gray-600 text-sm">
@@ -103,7 +108,7 @@ function DocumentList() {
   );
 }
 
-function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, file, setFile) {
+function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, file, setFile, id, isBinary) {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <form onSubmit={handleSubmit}
@@ -149,6 +154,11 @@ function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, fil
             {isNew ? 'Create Document' : 'Save Changes'}
           </button>
         </div>
+        {!isNew && (
+          <a href={`${backendUrl}/documents/download/${id}`} className="text-blue-500 hover:text-blue-600 mt-4 block">
+            Download {isBinary ? 'Binary File' : 'Text File'}
+          </a>
+        )}
       </form>
     </div>
   );
@@ -169,7 +179,7 @@ function DocumentEditor() {
       }
       const response = await fetch(`${backendUrl}/documents/${id}`);
       const retrieved = await response.json();
-      return { content: retrieved.content };
+      return { content: retrieved.content, is_binary: retrieved.is_binary };
     },
   });
 
@@ -195,14 +205,66 @@ function DocumentEditor() {
 
   if (data && !isFetching && !isPending && !error && content !== data.content && !editing) {
     setContent(data.content);
-    return DocEditRender(data.content, handleSubmit, isNew, setContent, setEditing, file, setFile);
+    return DocEditRender(data.content, handleSubmit, isNew, setContent, setEditing, file, setFile, id, data.is_binary);
   }
 
   if (isPending) return <div className="text-center py-8">Loading...</div>;
   if (error) return <div className="text-center py-8">{error.message}</div>;
   if (isFetching) return <div className="text-center py-8">Updating...</div>;
 
-  return DocEditRender(editing ? content : data.content, handleSubmit, isNew, setContent, setEditing, file, setFile);
+  return (
+    <div className="max-w-3xl mx-auto px-4 py-8">
+      <form onSubmit={handleSubmit}
+        className="bg-white rounded-lg shadow-md p-6">
+        <h2 style={{ colorScheme: 'light' }} 
+          className="text-2xl font-bold mb-6 text-black">
+          {isNew ? 'New Document' : 'Edit Document'}
+        </h2>
+        <textarea style={{ colorScheme: 'light' }}
+          value={content}
+          onChange={(e) => {
+            setEditing(true);
+            setContent(e.target.value);
+          }}
+          className="w-full h-64 p-4 border rounded-lg mb-6 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+          placeholder="Start writing your document here..."
+        />
+        <input
+          type="file"
+          onChange={(e) => {
+            setEditing(true);
+            setFile(e.target.files[0]);
+          }}
+          className="mb-6"
+        />
+        <div className="flex justify-end space-x-4">
+          <Link
+            to="/"
+            className="px-4 py-2 border rounded-lg hover:bg-gray-50 transition-colors">
+            Cancel
+          </Link>
+          <button
+            type="submit"
+            disabled={!content.trim()} // Disable button if content is empty
+            style={{
+              backgroundColor: content.trim() ? "#000000" : "#cccccc", // Change color if disabled
+              color: "#FFFFFF", // Explicitly force white text
+              WebkitAppearance: "none", // Prevents automatic styling in some browsers
+              MozAppearance: "none",
+              appearance: "none",
+            }}
+            className="px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">
+            {isNew ? 'Create Document' : 'Save Changes'}
+          </button>
+        </div>
+        {!isNew && (
+          <a href={`${backendUrl}/documents/download/${id}`} className="text-blue-500 hover:text-blue-600 mt-4 block">
+            Download {data.is_binary ? 'Binary File' : 'Text File'}
+          </a>
+        )}
+      </form>
+    </div>
+  );
 }
 
 function DocumentViewer() {
@@ -234,11 +296,13 @@ function DocumentViewer() {
             Edit
           </Link>
         </div>
-        <pre style={{ colorScheme: 'light' }} 
-          className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
         <a href={`${backendUrl}/documents/download/${doc.id}`} className="text-blue-500 hover:text-blue-600">
-          Download File
+          Download {doc.is_binary ? 'Binary File' : 'Text File'}
         </a>
+        {!doc.is_binary && (
+          <pre style={{ colorScheme: 'light' }} 
+            className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
+        )}
       </div>
     </div>
   );
