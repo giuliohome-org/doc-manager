@@ -50,6 +50,10 @@ function DocumentList() {
     queryKey: ['docListData'],
     queryFn: async () => {
       const response = await fetch(`${backendUrl}/documents`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'An error occurred');
+      }
       return await response.json();
     },
   });

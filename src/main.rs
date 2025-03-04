@@ -6,7 +6,7 @@ use rocket::serde::{json::Json, Serialize, Deserialize};
 use rocket::State;
 use std::env;
 use uuid::Uuid;
-use rocket::http::{ContentType, Header, Method};
+use rocket::http::{ContentType, Header, Method, Status};
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use rocket::fs::{FileServer};
 use futures::stream::StreamExt;
@@ -39,23 +39,43 @@ fn index() -> &'static str {
     "Welcome to the Document Manager! Use /documents endpoints to manage documents."
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    message: String,
+}
+
 #[get("/documents")]
-async fn list_documents(client: &State<AzureClient>) -> Result<Json<Vec<Document>>, String> {
+async fn list_documents(client: &State<AzureClient>) -> Result<Json<Vec<Document>>, (Status, Json<ErrorResponse>)> {
     let mut documents = Vec::new();
     
     let blob_list = match client.container_client.list_blobs().into_stream().next().await {
         Some(Ok(blob_list)) => blob_list,
-        Some(Err(e)) => return Err(format!("Failed to list blobs: {}", e)),
-        None => return Err("No blobs found".to_string()),
+        Some(Err(e)) => {
+            eprintln!("Failed to list blobs: {}", e);
+            return Err((Status::InternalServerError, Json(ErrorResponse { message: format!("Failed to list blobs: {}", e) })));
+        },
+        None => return Err((Status::NotFound, Json(ErrorResponse { message: "No blobs found".to_string() }))),
     };
     
     for blob in blob_list.blobs.blobs() {
         let blob_client = client.container_client.blob_client(blob.name.clone());
-        let content = blob_client.get_content().await
-            .map_err(|e| format!("Failed to get blob content: {}", e))?;
+        let content = match blob_client.get_content().await {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("Failed to get blob content: {}", e);
+                return Err((Status::InternalServerError, Json(ErrorResponse { message: format!("Failed to get blob content: {}", e) })));
+            },
+        };
+        let content_str = match String::from_utf8(content) {
+            Ok(content_str) => content_str,
+            Err(e) => {
+                eprintln!("Failed to parse content: {}", e);
+                return Err((Status::InternalServerError, Json(ErrorResponse { message: format!("Failed to parse content: {}", e) })));
+            },
+        };
         documents.push(Document {
             id: blob.name.clone(),
-            content: String::from_utf8(content).map_err(|e| format!("Failed to parse content: {}", e))?,
+            content: content_str,
             file_url: None, // Update this if you store file URLs separately
         });
     }
@@ -64,81 +84,120 @@ async fn list_documents(client: &State<AzureClient>) -> Result<Json<Vec<Document
 }
 
 #[get("/documents/<id>")]
-async fn get_document(id: &str, client: &State<AzureClient>) -> Option<Json<Document>> {
+async fn get_document(id: &str, client: &State<AzureClient>) -> Result<Json<Document>, (Status, String)> {
     let blob_client = client.container_client.blob_client(id);
     match blob_client.get_content().await {
         Ok(content) => {
             let file_url = blob_client.url().ok().map(|url| url.to_string());
-            Some(Json(Document {
+            let content_str = match String::from_utf8(content) {
+                Ok(content_str) => content_str,
+                Err(e) => {
+                    eprintln!("Failed to parse content: {}", e);
+                    return Err((Status::InternalServerError, format!("Failed to parse content: {}", e)));
+                },
+            };
+            Ok(Json(Document {
                 id: id.to_string(),
-                content: String::from_utf8(content).unwrap(),
+                content: content_str,
                 file_url, // Return the file URL
             }))
         },
-        Err(_) => None,
+        Err(e) => {
+            eprintln!("Failed to get document: {}", e);
+            Err((Status::NotFound, format!("Failed to get document: {}", e)))
+        },
     }
 }
 
 #[post("/documents", data = "<form>")]
-async fn create_document(mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Json<Document> {
+async fn create_document(mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Result<Json<Document>, (Status, String)> {
     let id = Uuid::new_v4().to_string();
     let content = form.content.as_bytes().to_vec();
     
     let blob_client = client.container_client.blob_client(&id);
-    blob_client.put_block_blob(content).await.unwrap();
+    blob_client.put_block_blob(content).await.map_err(|e| {
+        eprintln!("Failed to create document: {}", e);
+        (Status::InternalServerError, format!("Failed to create document: {}", e))
+    })?;
 
     let mut file_url = None;
     if let Some(mut file) = form.file.take() {
         let file_name = format!("{}_{}", id, file.name().unwrap_or("file"));
         let file_blob_client = client.container_client.blob_client(&file_name);
-        file.persist_to(&file_name).await.unwrap();
-        let file_content = std::fs::read(&file_name).unwrap();
-        file_blob_client.put_block_blob(file_content).await.unwrap();
-        std::fs::remove_file(&file_name).unwrap();
+        file.persist_to(&file_name).await.map_err(|e| {
+            eprintln!("Failed to persist file: {}", e);
+            (Status::InternalServerError, format!("Failed to persist file: {}", e))
+        })?;
+        let file_content = std::fs::read(&file_name).map_err(|e| {
+            eprintln!("Failed to read file: {}", e);
+            (Status::InternalServerError, format!("Failed to read file: {}", e))
+        })?;
+        file_blob_client.put_block_blob(file_content).await.map_err(|e| {
+            eprintln!("Failed to upload file: {}", e);
+            (Status::InternalServerError, format!("Failed to upload file: {}", e))
+        })?;
+        std::fs::remove_file(&file_name).map_err(|e| {
+            eprintln!("Failed to remove file: {}", e);
+            (Status::InternalServerError, format!("Failed to remove file: {}", e))
+        })?;
         file_url = Some(file_blob_client.url().unwrap().to_string());
     }
 
-    Json(Document {
+    Ok(Json(Document {
         id,
         content: form.content.to_string(),
         file_url, // Return the file URL if a file is uploaded
-    })
+    }))
 }
 
 #[put("/documents/<id>", data = "<form>")]
-async fn update_document(id: &str, mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Option<Json<Document>> {
+async fn update_document(id: &str, mut form: Form<DocumentForm<'_>>, client: &State<AzureClient>) -> Result<Json<Document>, (Status, String)> {
     let blob_client = client.container_client.blob_client(id);
     let content = form.content.as_bytes().to_vec();
     
-    match blob_client.put_block_blob(content).await {
-        Ok(_) => {
-            let mut file_url = None;
-            if let Some(mut file) = form.file.take() {
-                let file_name = format!("{}_{}", id, file.name().unwrap_or("file"));
-                let file_blob_client = client.container_client.blob_client(&file_name);
-                file.persist_to(&file_name).await.unwrap();
-                let file_content = std::fs::read(&file_name).unwrap();
-                file_blob_client.put_block_blob(file_content).await.unwrap();
-                std::fs::remove_file(&file_name).unwrap();
-                file_url = Some(file_blob_client.url().unwrap().to_string());
-            }
-            Some(Json(Document {
-                id: id.to_string(),
-                content: form.content.to_string(),
-                file_url, // Return the file URL if a file is uploaded
-            }))
-        },
-        Err(_) => None,
+    blob_client.put_block_blob(content).await.map_err(|e| {
+        eprintln!("Failed to update document: {}", e);
+        (Status::InternalServerError, format!("Failed to update document: {}", e))
+    })?;
+
+    let mut file_url = None;
+    if let Some(mut file) = form.file.take() {
+        let file_name = format!("{}_{}", id, file.name().unwrap_or("file"));
+        let file_blob_client = client.container_client.blob_client(&file_name);
+        file.persist_to(&file_name).await.map_err(|e| {
+            eprintln!("Failed to persist file: {}", e);
+            (Status::InternalServerError, format!("Failed to persist file: {}", e))
+        })?;
+        let file_content = std::fs::read(&file_name).map_err(|e| {
+            eprintln!("Failed to read file: {}", e);
+            (Status::InternalServerError, format!("Failed to read file: {}", e))
+        })?;
+        file_blob_client.put_block_blob(file_content).await.map_err(|e| {
+            eprintln!("Failed to upload file: {}", e);
+            (Status::InternalServerError, format!("Failed to upload file: {}", e))
+        })?;
+        std::fs::remove_file(&file_name).map_err(|e| {
+            eprintln!("Failed to remove file: {}", e);
+            (Status::InternalServerError, format!("Failed to remove file: {}", e))
+        })?;
+        file_url = Some(file_blob_client.url().unwrap().to_string());
     }
+
+    Ok(Json(Document {
+        id: id.to_string(),
+        content: form.content.to_string(),
+        file_url, // Return the file URL if a file is uploaded
+    }))
 }
 
 #[delete("/documents/<id>")]
-async fn delete_document(id: &str, client: &State<AzureClient>) -> Option<Json<&'static str>> {
+async fn delete_document(id: &str, client: &State<AzureClient>) -> Result<Json<&'static str>, (Status, String)> {
     let blob_client = client.container_client.blob_client(id);
-    match blob_client.delete().await {
-        Ok(_) => Some(Json("Document deleted successfully")),
-        Err(_) => None,
-    }
+    blob_client.delete().await.map_err(|e| {
+        eprintln!("Failed to delete document: {}", e);
+        (Status::InternalServerError, format!("Failed to delete document: {}", e))
+    })?;
+    Ok(Json("Document deleted successfully"))
 }
 
 struct DownloadResponse {
@@ -157,15 +216,20 @@ impl<'r> Responder<'r, 'static> for DownloadResponse {
 }
 
 #[get("/documents/download/<id>")]
-async fn download_document(id: &str, client: &State<AzureClient>) -> Option<DownloadResponse> {
+async fn download_document(id: &str, client: &State<AzureClient>) -> Result<DownloadResponse, (Status, String)> {
     let blob_client = client.container_client.blob_client(id);
-    match blob_client.get_content().await {
-        Ok(content) => Some(DownloadResponse {
-            content: String::from_utf8(content).unwrap(),
-            filename: format!("{}.txt", id),
-        }),
-        Err(_) => None,
-    }
+    let content = blob_client.get_content().await.map_err(|e| {
+        eprintln!("Failed to download document: {}", e);
+        (Status::NotFound, format!("Failed to download document: {}", e))
+    })?;
+    let content_str = String::from_utf8(content).map_err(|e| {
+        eprintln!("Failed to parse content: {}", e);
+        (Status::InternalServerError, format!("Failed to parse content: {}", e))
+    })?;
+    Ok(DownloadResponse {
+        content: content_str,
+        filename: format!("{}.txt", id),
+    })
 }
 
 #[launch]
