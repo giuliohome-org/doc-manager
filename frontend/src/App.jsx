@@ -17,7 +17,7 @@ function App() {
           <nav className="bg-white shadow-lg">
             <div className="max-w-7xl mx-auto px-4">
               <div className="flex justify-between items-center py-4">
-                <Link style={{ colorScheme: 'light' }} 
+                <Link style={{ colorScheme: 'light' }}
                   to="/" className="text-2xl font-bold text-blue-600">
                   DocManager
                 </Link>
@@ -71,7 +71,7 @@ function DocumentList() {
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {data.map(doc => (
-          <div key={doc.id} 
+          <div key={doc.id}
             style={{ colorScheme: 'light' }}
             className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow text-black">
             <div className="flex justify-between items-start mb-4">
@@ -90,17 +90,25 @@ function DocumentList() {
               </div>
             </div>
             <a href={`${backendUrl}/documents/download/${doc.id}`} className="text-blue-500 hover:text-blue-600">
-              Download {doc.is_binary ? 'Binary File' : 'Text File'}
+              Download Text File
             </a>
-            {!doc.is_binary && (
-              <p style={{ colorScheme: 'light' }}
-                className="text-gray-600 line-clamp-3 mb-4">{doc.content}</p>
-            )}
+
+            <p style={{ colorScheme: 'light' }}
+              className="text-gray-600 line-clamp-3 mb-4">{doc.content}</p>
+
+
+            {doc.file_id && <a href={`${backendUrl}/documents/download/${doc.file_id}`} className="text-blue-500 hover:text-blue-600">
+              Download  {doc.file_id}
+            </a>}
+
+            <hr className="my-4 border-gray-300" />
+
             <Link style={{ colorScheme: 'light' }}
               to={`/view/${doc.id}`}
               className="text-gray-500 hover:text-gray-600 text-sm">
-              View full document →
+              View full document
             </Link>
+
           </div>
         ))}
       </div>
@@ -113,7 +121,7 @@ function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, fil
     <div className="max-w-3xl mx-auto px-4 py-8">
       <form onSubmit={handleSubmit}
         className="bg-white rounded-lg shadow-md p-6">
-        <h2 style={{ colorScheme: 'light' }} 
+        <h2 style={{ colorScheme: 'light' }}
           className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
@@ -205,7 +213,7 @@ function DocumentEditor() {
 
   if (data && !isFetching && !isPending && !error && content !== data.content && !editing) {
     setContent(data.content);
-    return DocEditRender(data.content, handleSubmit, isNew, setContent, setEditing, file, setFile, id, data.is_binary);
+    return DocEditRender(data.content, handleSubmit, isNew, setContent, setEditing, file, setFile, id, data.file_id);
   }
 
   if (isPending) return <div className="text-center py-8">Loading...</div>;
@@ -216,7 +224,7 @@ function DocumentEditor() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <form onSubmit={handleSubmit}
         className="bg-white rounded-lg shadow-md p-6">
-        <h2 style={{ colorScheme: 'light' }} 
+        <h2 style={{ colorScheme: 'light' }}
           className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
         </h2>
@@ -288,7 +296,7 @@ function DocumentViewer() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <div className="bg-white rounded-lg shadow-md p-6">
         <div className="flex justify-between items-center mb-6">
-          <h2 style={{ colorScheme: 'light' }} 
+          <h2 style={{ colorScheme: 'light' }}
             className="text-2xl font-bold text-black">Document {doc.id.slice(0, 8)}</h2>
           <Link style={{ colorScheme: 'light' }}
             to={`/edit/${doc.id}`}
@@ -297,12 +305,17 @@ function DocumentViewer() {
           </Link>
         </div>
         <a href={`${backendUrl}/documents/download/${doc.id}`} className="text-blue-500 hover:text-blue-600">
-          Download {doc.is_binary ? 'Binary File' : 'Text File'}
+          Download Text File
         </a>
-        {!doc.is_binary && (
-          <pre style={{ colorScheme: 'light', textAlign: 'left' }} 
-            className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
-        )}
+        
+        <pre style={{ colorScheme: 'light', textAlign: 'left' }}
+          className="whitespace-pre-wrap font-sans text-black">{doc.content}</pre>
+        
+        {doc.file_id && <a href={`${
+          backendUrl}/documents/download/${doc.file_id}`} className="text-blue-500 hover:text-blue-600">
+          Download {doc.file_id}
+        </a>}
+
       </div>
     </div>
   );
