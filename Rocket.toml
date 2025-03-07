@@ -1,2 +1,2 @@
 [default]
-limits = { form = "10 MiB", "data-form" = "10 MiB", "file/jpg" = "10 MiB", "json" = "10 MiB", "msgpack" = "10 MiB" }
+limits = { form = "10 MiB", "data-form" = "10 MiB", "file/jpg" = "10 MiB", "json" = "10 MiB", "msgpack" = "10 MiB", "multipart/form-data" = "10 MiB" }
