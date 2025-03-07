@@ -40,3 +40,8 @@
 .read-the-docs {
   color: #888;
 }
+
+input[type="file"] {
+  /* Styling the file input itself if needed */
+  color: black; /* Ensure the text inside input is black */
+}
