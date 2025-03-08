@@ -7,12 +7,16 @@ limits.json = "10 MiB"
 limits.msgpack = "10 MiB"
 limits.file = "10 MiB"
 limits."file/jpg" = "10 MiB"
+limits."file/mp4" = "10 MiB"
+limits."file/mov" = "10 MiB"
+limits."file/avi" = "10 MiB"
 
 
 [release]
 limits.bytes = "10 MiB"
 limits.string = "10 MiB"
 limits.form = "10 MiB"
+limits."data-form" = "10 MiB"
 limits.json = "10 MiB"
 limits.msgpack = "10 MiB"
 limits.file = "10 MiB"
