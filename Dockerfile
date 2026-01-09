@@ -11,7 +11,7 @@ RUN npm run build
 
 ################################################################################
 # Stage 2: Build the Rust application
-FROM docker.io/rust:1-slim-bookworm AS build
+FROM docker.io/rust:1.85-slim-bookworm AS build
 
 ## cargo package name: customize here or provide via --build-arg
 ARG pkg=docs-app
