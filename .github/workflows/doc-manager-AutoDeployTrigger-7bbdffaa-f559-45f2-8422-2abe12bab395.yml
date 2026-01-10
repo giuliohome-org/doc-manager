@@ -41,11 +41,27 @@ jobs:
           registryPassword: ${{ secrets.RUSTROCKERVITEREACT_REGISTRY_PASSWORD }}
           containerAppName: rust-rocker-vite-react
           resourceGroup: serverless
-          imageToBuild: |
-            giuliohome/doc-manager:${{ github.sha }}
-            giuliohome/doc-manager:latest
-            giuliohome/doc-manager:e2e
+          imageToBuild: giuliohome/doc-manager:${{ github.sha }}
           _buildArgumentsKey_: |
             _buildArgumentsValues_
 
+      # ----------------------------------------
+      # Login to Docker Hub to push extra tags
+      # ----------------------------------------
+      - name: Docker login
+        run: |
+          echo "${{ secrets.RUSTROCKERVITEREACT_REGISTRY_PASSWORD }}" | \
+            docker login docker.io \
+              -u "${{ secrets.RUSTROCKERVITEREACT_REGISTRY_USERNAME }}" \
+              --password-stdin
 
+      # ----------------------------------------
+      # Tag and push latest + e2e
+      # ----------------------------------------
+      - name: Tag and push latest + e2e
+        run: |
+          docker pull giuliohome/doc-manager:${{ github.sha }}
+          docker tag giuliohome/doc-manager:${{ github.sha }} giuliohome/doc-manager:latest
+          docker tag giuliohome/doc-manager:${{ github.sha }} giuliohome/doc-manager:e2e
+          docker push giuliohome/doc-manager:latest
+          docker push giuliohome/doc-manager:e2e
