@@ -41,7 +41,10 @@ jobs:
           registryPassword: ${{ secrets.RUSTROCKERVITEREACT_REGISTRY_PASSWORD }}
           containerAppName: rust-rocker-vite-react
           resourceGroup: serverless
-          imageToBuild: giuliohome/doc-manager:${{ github.sha }}
+          imageToBuild: |
+            giuliohome/doc-manager:${{ github.sha }}
+            giuliohome/doc-manager:latest
+            giuliohome/doc-manager:e2e
           _buildArgumentsKey_: |
             _buildArgumentsValues_
 
