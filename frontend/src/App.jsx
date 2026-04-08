@@ -45,7 +45,7 @@ function App() {
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
 
-function DocumentList() {
+export function DocumentList() {
   const { isPending, error, data, isFetching } = useQuery({
     queryKey: ['docListData'],
     queryFn: async () => {
@@ -172,7 +172,7 @@ function DocEditRender(content, handleSubmit, isNew, setContent, setEditing, fil
   );
 }
 
-function DocumentEditor() {
+export function DocumentEditor() {
   const [content, setContent] = useState('');
   const [file, setFile] = useState(null);
   const [isNew] = useState(!window.location.pathname.includes('edit'));
@@ -275,7 +275,7 @@ function DocumentEditor() {
   );
 }
 
-function DocumentViewer() {
+export function DocumentViewer() {
   const id = window.location.pathname.split('/').pop();
 
   const { isPending, error, data, isFetching } = useQuery({
