@@ -17,7 +17,7 @@ export default [
         sourceType: 'module',
       },
     },
-    settings: { react: { version: '18.3' } },
+    settings: { react: { version: '19.2' } },
     plugins: {
       react,
       'react-hooks': reactHooks,
@@ -33,6 +33,25 @@ export default [
         'warn',
         { allowConstantExport: true },
       ],
+    },
+  },
+  {
+    files: ['**/test/**/*.{js,jsx}', '**/*.test.{js,jsx}'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        vi: true,
+        global: true,
+        beforeEach: true,
+        afterEach: true,
+        describe: true,
+        it: true,
+        expect: true,
+      },
+    },
+    rules: {
+      'no-undef': 'off',
+      'no-unused-vars': 'off',
     },
   },
 ]
