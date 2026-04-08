@@ -46,6 +46,7 @@ function App() {
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
 
 export function DocumentList() {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const { isPending, error, data, isFetching } = useQuery({
     queryKey: ['docListData'],
     queryFn: async () => {
@@ -67,6 +68,10 @@ export function DocumentList() {
       .then(() => window.location.href = '/');
   };
 
+  const confirmingDoc = confirmDeleteId
+    ? data.find(d => d.id === confirmDeleteId)
+    : null;
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -83,7 +88,7 @@ export function DocumentList() {
                   Edit
                 </Link>
                 <button
-                  onClick={() => deleteDocument(doc.id)}
+                  onClick={() => setConfirmDeleteId(doc.id)}
                   className="text-red-500 hover:text-red-600">
                   Delete
                 </button>
@@ -112,6 +117,53 @@ export function DocumentList() {
           </div>
         ))}
       </div>
+
+      {confirmingDoc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => setConfirmDeleteId(null)}
+        >
+          <div
+            style={{ colorScheme: 'light' }}
+            className="bg-white text-black rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 transform transition-all"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start space-x-4">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold">Delete document?</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Document {confirmingDoc.id.slice(0, 8)} will be permanently deleted. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end space-x-3 mt-6">
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{ backgroundColor: '#ffffff', color: '#111827' }}
+                className="px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const id = confirmDeleteId;
+                  setConfirmDeleteId(null);
+                  deleteDocument(id);
+                }}
+                style={{ backgroundColor: '#dc2626', color: '#ffffff' }}
+                className="px-4 py-2 rounded-lg hover:opacity-90 transition-opacity font-semibold"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
