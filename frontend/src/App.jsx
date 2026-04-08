@@ -47,6 +47,7 @@ const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
 
 export function DocumentList() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const { isPending, error, data, isFetching } = useQuery({
     queryKey: ['docListData'],
     queryFn: async () => {
@@ -72,10 +73,26 @@ export function DocumentList() {
     ? data.find(d => d.id === confirmDeleteId)
     : null;
 
+  const filtered = data.filter(doc =>
+    doc.content.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="mb-6">
+        <input
+          type="text"
+          placeholder="Search documents..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full max-w-md px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+        />
+      </div>
+      {filtered.length === 0 && searchQuery && (
+        <p className="text-gray-500 text-center py-8">No documents match your search.</p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {data.map(doc => (
+        {filtered.map(doc => (
           <div key={doc.id}
             style={{ colorScheme: 'light' }}
             className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow text-black">
