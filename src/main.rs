@@ -46,6 +46,43 @@ struct ErrorResponse {
     message: String,
 }
 
+#[catch(413)]
+fn payload_too_large(req: &Request<'_>) -> Json<ErrorResponse> {
+    let limit = req
+        .rocket()
+        .config()
+        .limits
+        .get("data-form")
+        .or_else(|| req.rocket().config().limits.get("bytes"))
+        .map(|b| format!("{}", b))
+        .unwrap_or_else(|| "the configured limit".to_string());
+    Json(ErrorResponse {
+        message: format!("Upload too large. Maximum allowed size is {}.", limit),
+    })
+}
+
+#[catch(422)]
+fn unprocessable_entity() -> Json<ErrorResponse> {
+    Json(ErrorResponse {
+        message: "Request could not be processed. The upload may be too large or malformed."
+            .to_string(),
+    })
+}
+
+#[catch(404)]
+fn not_found() -> Json<ErrorResponse> {
+    Json(ErrorResponse {
+        message: "Resource not found.".to_string(),
+    })
+}
+
+#[catch(500)]
+fn internal_error() -> Json<ErrorResponse> {
+    Json(ErrorResponse {
+        message: "Internal server error.".to_string(),
+    })
+}
+
 #[get("/documents")]
 async fn list_documents(
     client: &State<AzureClient>,
@@ -455,6 +492,15 @@ async fn rocket() -> _ {
                 update_document,
                 delete_document,
                 download_document
+            ],
+        )
+        .register(
+            "/api",
+            catchers![
+                payload_too_large,
+                unprocessable_entity,
+                not_found,
+                internal_error
             ],
         )
 }

@@ -44,6 +44,7 @@ function App() {
 }
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "/api";
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 export function DocumentList() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -262,6 +263,12 @@ export function DocumentEditor() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+      const limitMB = MAX_UPLOAD_BYTES / 1024 / 1024;
+      window.alert(`File is too large (${sizeMB} MB). Maximum allowed size is ${limitMB} MB.`);
+      return;
+    }
     const url = isNew ? `${backendUrl}/documents` : `${backendUrl}/documents/${id}`;
     const method = isNew ? 'POST' : 'PUT';
     setEditing(false);
