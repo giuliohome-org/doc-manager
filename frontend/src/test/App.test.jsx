@@ -158,6 +158,11 @@ describe('DocumentList', () => {
     const deleteButtons = screen.getAllByRole('button', { name: /delete/i });
     await user.click(deleteButtons[0]);
 
+    // The first click opens the confirmation modal. Click the modal's
+    // Delete button (now appended after the card buttons) to confirm.
+    const afterModalOpen = screen.getAllByRole('button', { name: /delete/i });
+    await user.click(afterModalOpen[afterModalOpen.length - 1]);
+
     expect(global.fetch).toHaveBeenCalledWith(
       expect.stringContaining('/documents/abc12345-6789-def0-1234-567890123456'),
       expect.objectContaining({ method: 'DELETE' })
@@ -499,5 +504,99 @@ describe('DocumentViewer', () => {
     await waitFor(() => {
       expect(screen.getByText(/download text file/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('Encryption UI', () => {
+  it('DocumentEditor hides encryption fields until the toggle is checked', async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(() => new Promise(() => {}));
+    renderWithProviders(<DocumentEditor />, { route: '/new' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/encrypt with a password/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByPlaceholderText(/^password$/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText(/encrypt with a password/i));
+    expect(screen.getByPlaceholderText(/^password$/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/confirm password/i)).toBeInTheDocument();
+  });
+
+  it('DocumentViewer shows the unlock panel for an encrypted document', async () => {
+    const { encryptText } = await import('../crypto');
+    const envelope = await encryptText('secret', 'top secret content');
+    const encDoc = { id: 'enc12345-0000-0000-0000-000000000000', content: envelope, file_id: null };
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(encDoc) })
+    );
+    renderWithProviders(<DocumentViewer />, { route: '/view/enc12345' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /unlock/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/top secret content/i)).not.toBeInTheDocument();
+  });
+
+  it('DocumentViewer decrypts and shows content after a correct password', async () => {
+    const user = userEvent.setup();
+    const { encryptText } = await import('../crypto');
+    const envelope = await encryptText('hunter2', 'decrypted payload');
+    const encDoc = { id: 'enc22222-0000-0000-0000-000000000000', content: envelope, file_id: null };
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(encDoc) })
+    );
+    renderWithProviders(<DocumentViewer />, { route: '/view/enc22222' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /unlock/i })).toBeInTheDocument();
+    });
+    await user.type(screen.getByPlaceholderText(/password/i), 'hunter2');
+    await user.click(screen.getByRole('button', { name: /unlock/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/decrypted payload/i)).toBeInTheDocument();
+    });
+  });
+
+  it('DocumentViewer rejects a wrong password without leaking content', async () => {
+    const user = userEvent.setup();
+    const { encryptText } = await import('../crypto');
+    const envelope = await encryptText('right-pw', 'very private');
+    const encDoc = { id: 'enc33333-0000-0000-0000-000000000000', content: envelope, file_id: null };
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(encDoc) })
+    );
+    renderWithProviders(<DocumentViewer />, { route: '/view/enc33333' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /unlock/i })).toBeInTheDocument();
+    });
+    await user.type(screen.getByPlaceholderText(/password/i), 'wrong-pw');
+    await user.click(screen.getByRole('button', { name: /unlock/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/password errata/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/very private/i)).not.toBeInTheDocument();
+  });
+
+  it('DocumentList marks encrypted docs with a lock badge and hides preview', async () => {
+    const { encryptText } = await import('../crypto');
+    const envelope = await encryptText('pw', 'should not be visible');
+    const docs = [
+      { id: 'enc-id-12345678-xxxx-yyyy-zzzz-000000000000', content: envelope, file_id: null },
+    ];
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(docs) })
+    );
+    renderWithProviders(<DocumentList />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/encrypted document — open to unlock/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/should not be visible/i)).not.toBeInTheDocument();
+    // No "Download Text File" link for encrypted docs in the list card.
+    expect(screen.queryByText(/download text file/i)).not.toBeInTheDocument();
   });
 });
