@@ -22,12 +22,14 @@ use uuid::Uuid;
 #[serde(crate = "rocket::serde")]
 struct Document {
     id: String,
+    title: String,
     content: String,
     file_id: Option<String>
 }
 
 #[derive(FromForm)]
 struct DocumentForm<'r> {
+    title: Option<&'r str>,
     content: &'r str,
     file: Option<TempFile<'r>>,
 }
@@ -134,10 +136,19 @@ async fn list_documents(
                 ));
             }
         };
+
+        let title_blob_name = format!("{}_title", blob.name);
+        let title = match client.container_client.blob_client(&title_blob_name).get_content().await {
+            Ok(t) => String::from_utf8(t).unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+
         // Search for the first blob with the same id part and a filename
         let mut file_id = None;
         for blobfile in blob_list.blobs.blobs() {
-            if blobfile.name.starts_with(&format!("{}_{}", blob.name, "")) {
+            if blobfile.name.starts_with(&format!("{}_{}", blob.name, ""))
+                && blobfile.name != title_blob_name
+            {
             file_id = Some(blobfile.name.clone());
             break;
             }
@@ -154,6 +165,7 @@ async fn list_documents(
             })?;
         documents.push(Document {
             id: blob.name.clone(),
+            title,
             content: content_str,
             file_id: file_id,
         });
@@ -180,7 +192,13 @@ async fn get_document(
                         }),
                     )
                 })?;
-            
+
+            let title_blob_name = format!("{}_title", id);
+            let title = match client.container_client.blob_client(&title_blob_name).get_content().await {
+                Ok(t) => String::from_utf8(t).unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+
             let blob_list = match client
                 .container_client
                 .list_blobs()
@@ -210,13 +228,16 @@ async fn get_document(
             // Search for the first blob with the same id part and a filename
             let mut file_id = None;
             for blobfile in blob_list.blobs.blobs() {
-                if blobfile.name.starts_with(&format!("{}_{}", id, "")) {
+                if blobfile.name.starts_with(&format!("{}_{}", id, ""))
+                    && blobfile.name != title_blob_name
+                {
                 file_id = Some(blobfile.name.clone());
                 break;
                 }
             }
             Ok(Json(Document {
                 id: id.to_string(),
+                title,
                 content: content_str,
                 file_id: file_id, 
             }))
@@ -240,6 +261,7 @@ async fn create_document(
 ) -> Result<Json<Document>, (Status, Json<ErrorResponse>)> {
     let id = Uuid::new_v4().to_string();
     let content = form.content.as_bytes().to_vec();
+    let title = form.title.unwrap_or("");
 
     let blob_client = client.container_client.blob_client(&id);
     blob_client.put_block_blob(content).await.map_err(|e| {
@@ -251,6 +273,19 @@ async fn create_document(
             }),
         )
     })?;
+
+    if !title.is_empty() {
+        let title_blob_client = client.container_client.blob_client(&format!("{}_title", id));
+        title_blob_client.put_block_blob(title.as_bytes().to_vec()).await.map_err(|e| {
+            eprintln!("Failed to create title blob: {}", e);
+            (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    message: format!("Failed to create title blob: {}", e),
+                }),
+            )
+        })?;
+    }
 
     let mut file_name_maybe = None;
     if let Some(file) = form.file.take() {
@@ -289,6 +324,7 @@ async fn create_document(
 
     Ok(Json(Document {
         id,
+        title: title.to_string(),
         content:form.content.to_string(),
         file_id: file_name_maybe
     }))
@@ -302,6 +338,7 @@ async fn update_document(
 ) -> Result<Json<Document>, (Status, Json<ErrorResponse>)> {
     let blob_client = client.container_client.blob_client(id);
     let content = form.content.as_bytes().to_vec();
+    let title = form.title.unwrap_or("");
 
     blob_client.put_block_blob(content).await.map_err(|e| {
         eprintln!("Failed to update document: {}", e);
@@ -312,6 +349,24 @@ async fn update_document(
             }),
         )
     })?;
+
+    let title_blob_name = format!("{}_title", id);
+    if !title.is_empty() {
+        let title_blob_client = client.container_client.blob_client(&title_blob_name);
+        title_blob_client.put_block_blob(title.as_bytes().to_vec()).await.map_err(|e| {
+            eprintln!("Failed to update title blob: {}", e);
+            (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    message: format!("Failed to update title blob: {}", e),
+                }),
+            )
+        })?;
+    } else {
+        // Delete title blob if title is empty
+        let title_blob_client = client.container_client.blob_client(&title_blob_name);
+        let _ = title_blob_client.delete().await;
+    }
 
     let mut file_name_maybe = None;
     if let Some(mut file) = form.file.take() {
@@ -361,6 +416,7 @@ async fn update_document(
 
     Ok(Json(Document {
         id: id.to_string(),
+        title: title.to_string(),
         content: form.content.to_string(),
         file_id: file_name_maybe
     }))
@@ -381,6 +437,9 @@ async fn delete_document(
             }),
         )
     })?;
+    // Also delete the title blob, ignore errors if it doesn't exist
+    let title_blob_client = client.container_client.blob_client(&format!("{}_title", id));
+    let _ = title_blob_client.delete().await;
     Ok(Json("Document deleted successfully"))
 }
 

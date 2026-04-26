@@ -133,9 +133,11 @@ export function DocumentList() {
     ? data.find(d => d.id === confirmDeleteId)
     : null;
 
-  const filtered = data.filter(doc =>
-    doc.content.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filtered = data.filter(doc => {
+    const query = searchQuery.toLowerCase();
+    return doc.content.toLowerCase().includes(query)
+      || doc.title.toLowerCase().includes(query);
+  });
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
@@ -162,7 +164,7 @@ export function DocumentList() {
             <div className="flex justify-between items-start mb-4">
               <h3 className="text-lg font-semibold truncate">
                 {encrypted && <span title="Encrypted" className="mr-1">🔒</span>}
-                Document {doc.id.slice(0, 8)}
+                {doc.title || `Document ${doc.id.slice(0, 8)}`}
               </h3>
               <div className="flex space-x-2">
                 <Link style={{ colorScheme: 'light' }}
@@ -232,7 +234,7 @@ export function DocumentList() {
               <div className="flex-1">
                 <h3 className="text-lg font-semibold">Delete document?</h3>
                 <p className="text-sm text-gray-600 mt-1">
-                  Document {confirmingDoc.id.slice(0, 8)} will be permanently deleted. This action cannot be undone.
+                  Document {confirmingDoc.title || confirmingDoc.id.slice(0, 8)} will be permanently deleted. This action cannot be undone.
                 </p>
               </div>
             </div>
@@ -264,6 +266,7 @@ export function DocumentList() {
 }
 
 export function DocumentEditor() {
+  const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [file, setFile] = useState(null);
   const [isNew] = useState(!window.location.pathname.includes('edit'));
@@ -288,7 +291,7 @@ export function DocumentEditor() {
       }
       const response = await fetch(`${backendUrl}/documents/${id}`);
       const retrieved = await response.json();
-      return { content: retrieved.content, file_id: retrieved.file_id };
+      return { title: retrieved.title, content: retrieved.content, file_id: retrieved.file_id };
     },
   });
 
@@ -296,8 +299,10 @@ export function DocumentEditor() {
     if (!data || editing || unlocked) return;
     if (isEncryptedText(data.content) && lockedContent !== data.content) {
       setLockedContent(data.content);
+      setTitle(data.title || '');
     } else if (!isEncryptedText(data.content) && content !== data.content) {
       setContent(data.content);
+      setTitle(data.title || '');
     }
   }, [data, editing, unlocked, lockedContent, content]);
 
@@ -351,6 +356,7 @@ export function DocumentEditor() {
 
       const formData = new FormData();
       formData.append('content', payloadContent);
+      if (title) formData.append('title', title);
       if (payloadFile) formData.append('file', payloadFile);
 
       await fetch(url, { method, body: formData });
@@ -363,7 +369,7 @@ export function DocumentEditor() {
 
   if (!isNew && lockedContent && !unlocked) {
     return <UnlockPanel
-      title="Unlock document to edit"
+      title={data.title || "Unlock document to edit"}
       onUnlock={tryUnlock}
       errorMessage={unlockError}
       busy={unlockBusy}
@@ -385,8 +391,19 @@ export function DocumentEditor() {
         <h2 style={{ colorScheme: 'light' }}
           className="text-2xl font-bold mb-6 text-black">
           {isNew ? 'New Document' : 'Edit Document'}
+          {title && <span className="ml-2 text-gray-600 font-normal text-lg">— {title}</span>}
           {unlocked && <span className="ml-2 text-sm text-green-700">🔓 unlocked</span>}
         </h2>
+        <input style={{ colorScheme: 'light' }}
+          type="text"
+          value={title}
+          onChange={(e) => {
+            setEditing(true);
+            setTitle(e.target.value);
+          }}
+          className="w-full p-3 mb-4 border rounded-lg text-black focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          placeholder="Title (optional, always visible)"
+        />
         <textarea style={{ colorScheme: 'light', textAlign: 'left' }}
           value={content}
           onChange={(e) => {
@@ -539,7 +556,7 @@ export function DocumentViewer() {
 
   if (encrypted && plaintext == null) {
     return <UnlockPanel
-      title="Unlock document"
+      title={doc.title || "Unlock document"}
       onUnlock={tryUnlock}
       errorMessage={unlockError}
       busy={unlockBusy}
@@ -555,7 +572,7 @@ export function DocumentViewer() {
           <h2 style={{ colorScheme: 'light' }}
             className="text-2xl font-bold text-black">
             {encrypted && <span title="Encrypted" className="mr-1">🔒</span>}
-            Document {doc.id.slice(0, 8)}
+            {doc.title || `Document ${doc.id.slice(0, 8)}`}
           </h2>
           <Link style={{ colorScheme: 'light' }}
             to={`/edit/${doc.id}`}

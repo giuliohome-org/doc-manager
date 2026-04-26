@@ -46,11 +46,11 @@ function renderWithProviders(ui, { route = '/' } = {}) {
 }
 
 const mockDocuments = [
-  { id: 'abc12345-6789-def0-1234-567890123456', content: 'Hello world', file_id: null },
-  { id: 'def67890-1234-abc0-5678-901234567890', content: 'Second doc', file_id: 'def67890-1234-abc0-5678-901234567890_report.pdf' },
+  { id: 'abc12345-6789-def0-1234-567890123456', title: 'My First Doc', content: 'Hello world', file_id: null },
+  { id: 'def67890-1234-abc0-5678-901234567890', title: '', content: 'Second doc', file_id: 'def67890-1234-abc0-5678-901234567890_report.pdf' },
 ];
 
-const mockDocument = { id: 'abc12345-6789-def0-1234-567890123456', content: 'Hello world', file_id: null };
+const mockDocument = { id: 'abc12345-6789-def0-1234-567890123456', title: 'My First Doc', content: 'Hello world', file_id: null };
 
 describe('DocumentList', () => {
   it('shows loading state while fetching documents', () => {
@@ -107,7 +107,7 @@ describe('DocumentList', () => {
     });
   });
 
-  it('displays document IDs truncated to 8 characters', async () => {
+  it('displays document titles or truncated IDs when title is empty', async () => {
     global.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
@@ -116,7 +116,7 @@ describe('DocumentList', () => {
     );
     renderWithProviders(<DocumentList />);
     await waitFor(() => {
-      expect(screen.getByText(/document abc12345/i)).toBeInTheDocument();
+      expect(screen.getByText(/my first doc/i)).toBeInTheDocument();
       expect(screen.getByText(/document def67890/i)).toBeInTheDocument();
     });
   });
@@ -402,7 +402,7 @@ describe('DocumentViewer', () => {
     });
   });
 
-  it('displays truncated document ID in heading', async () => {
+  it('displays document title in heading', async () => {
     global.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
@@ -411,7 +411,7 @@ describe('DocumentViewer', () => {
     );
     renderWithProviders(<DocumentViewer />, { route: '/view/abc' });
     await waitFor(() => {
-      expect(screen.getByText(/document abc12345/i)).toBeInTheDocument();
+      expect(screen.getByText(/my first doc/i)).toBeInTheDocument();
     });
   });
 
@@ -503,6 +503,76 @@ describe('DocumentViewer', () => {
     renderWithProviders(<DocumentViewer />, { route: '/view/abc' });
     await waitFor(() => {
       expect(screen.getByText(/download text file/i)).toBeInTheDocument();
+    });
+  });
+  it('shows title input in editor', async () => {
+    global.fetch = vi.fn(() => new Promise(() => {}));
+    renderWithProviders(<DocumentEditor />, { route: '/new' });
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/title/i)).toBeInTheDocument();
+    });
+  });
+
+  it('includes title in FormData when creating a document', async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ id: 'new-id', title: 'Test Title', content: 'Test content' }),
+      })
+    );
+
+    renderWithProviders(<DocumentEditor />, { route: '/new' });
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/title/i)).toBeInTheDocument();
+    });
+
+    const titleInput = screen.getByPlaceholderText(/title/i);
+    await user.type(titleInput, 'Test Title');
+
+    const textarea = screen.getByPlaceholderText(/start writing/i);
+    await user.type(textarea, 'Test content');
+
+    const submitButton = screen.getByRole('button', { name: /create document/i });
+    await user.click(submitButton);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/documents'),
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('searches documents by title', async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(mockDocuments),
+      })
+    );
+    renderWithProviders(<DocumentList />);
+    await waitFor(() => {
+      expect(screen.getByText(/my first doc/i)).toBeInTheDocument();
+    });
+
+    const searchInput = screen.getByPlaceholderText(/search/i);
+    await user.type(searchInput, 'My First');
+
+    expect(screen.getByText(/my first doc/i)).toBeInTheDocument();
+    expect(screen.queryByText(/document def67890/i)).not.toBeInTheDocument();
+  });
+
+  it('shows fallback ID when document has no title', async () => {
+    const docsNoTitle = [
+      { id: 'notitle-1234-5678-abcd-efghijklmnop', title: '', content: 'No title doc', file_id: null },
+    ];
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(docsNoTitle) })
+    );
+    renderWithProviders(<DocumentList />);
+    await waitFor(() => {
+      expect(screen.getByText(/document notitle/i)).toBeInTheDocument();
     });
   });
 });
