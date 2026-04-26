@@ -137,18 +137,15 @@ async fn list_documents(
             }
         };
 
-        let title_blob_name = format!("{}_title", blob.name);
+        let title_blob_name = format!("title_{}", blob.name);
         let title = match client.container_client.blob_client(&title_blob_name).get_content().await {
             Ok(t) => String::from_utf8(t).unwrap_or_default(),
             Err(_) => String::new(),
         };
 
-        // Search for the first blob with the same id part and a filename
         let mut file_id = None;
         for blobfile in blob_list.blobs.blobs() {
-            if blobfile.name.starts_with(&format!("{}_{}", blob.name, ""))
-                && blobfile.name != title_blob_name
-            {
+            if blobfile.name.starts_with(&format!("{}_{}", blob.name, "")) {
             file_id = Some(blobfile.name.clone());
             break;
             }
@@ -193,7 +190,7 @@ async fn get_document(
                     )
                 })?;
 
-            let title_blob_name = format!("{}_title", id);
+            let title_blob_name = format!("title_{}", id);
             let title = match client.container_client.blob_client(&title_blob_name).get_content().await {
                 Ok(t) => String::from_utf8(t).unwrap_or_default(),
                 Err(_) => String::new(),
@@ -228,9 +225,7 @@ async fn get_document(
             // Search for the first blob with the same id part and a filename
             let mut file_id = None;
             for blobfile in blob_list.blobs.blobs() {
-                if blobfile.name.starts_with(&format!("{}_{}", id, ""))
-                    && blobfile.name != title_blob_name
-                {
+                if blobfile.name.starts_with(&format!("{}_{}", id, "")) {
                 file_id = Some(blobfile.name.clone());
                 break;
                 }
@@ -275,7 +270,7 @@ async fn create_document(
     })?;
 
     if !title.is_empty() {
-        let title_blob_client = client.container_client.blob_client(&format!("{}_title", id));
+        let title_blob_client = client.container_client.blob_client(&format!("title_{}", id));
         title_blob_client.put_block_blob(title.as_bytes().to_vec()).await.map_err(|e| {
             eprintln!("Failed to create title blob: {}", e);
             (
@@ -350,7 +345,7 @@ async fn update_document(
         )
     })?;
 
-    let title_blob_name = format!("{}_title", id);
+    let title_blob_name = format!("title_{}", id);
     if !title.is_empty() {
         let title_blob_client = client.container_client.blob_client(&title_blob_name);
         title_blob_client.put_block_blob(title.as_bytes().to_vec()).await.map_err(|e| {
@@ -438,7 +433,7 @@ async fn delete_document(
         )
     })?;
     // Also delete the title blob, ignore errors if it doesn't exist
-    let title_blob_client = client.container_client.blob_client(&format!("{}_title", id));
+    let title_blob_client = client.container_client.blob_client(&format!("title_{}", id));
     let _ = title_blob_client.delete().await;
     Ok(Json("Document deleted successfully"))
 }

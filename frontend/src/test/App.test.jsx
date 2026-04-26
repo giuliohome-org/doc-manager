@@ -541,6 +541,9 @@ describe('DocumentViewer', () => {
       expect.stringContaining('/documents'),
       expect.objectContaining({ method: 'POST' })
     );
+    const postCall = global.fetch.mock.calls.find(call => call[1]?.method === 'POST');
+    expect(postCall[1].body.get('title')).toBe('Test Title');
+    expect(postCall[1].body.get('content')).toBe('Test content');
   });
 
   it('searches documents by title', async () => {
