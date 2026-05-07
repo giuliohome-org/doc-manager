@@ -1,6 +1,8 @@
 #[macro_use]
 extern crate rocket;
 
+mod mcp;
+
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::*;
 use futures::stream::StreamExt;
@@ -34,8 +36,8 @@ struct DocumentForm<'r> {
     file: Option<TempFile<'r>>,
 }
 
-struct AzureClient {
-    container_client: ContainerClient,
+pub(crate) struct AzureClient {
+    pub(crate) container_client: ContainerClient,
 }
 
 #[get("/")]
@@ -530,6 +532,19 @@ async fn rocket() -> _ {
     .to_cors()
     .expect("CORS configuration failed");
 
+    if env::var("MCP_BEARER_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
+        let mode = if env::var("MCP_READ_ONLY").ok().as_deref()
+            .map(|v| matches!(v, "1" | "true" | "TRUE" | "yes")).unwrap_or(false)
+        {
+            "read-only"
+        } else {
+            "full CRUD"
+        };
+        println!("MCP endpoint enabled at /mcp ({mode}).");
+    } else {
+        println!("MCP endpoint disabled (set MCP_BEARER_TOKEN to enable).");
+    }
+
     rocket::build()
         .manage(azure_client)
         .attach(cors)
@@ -555,6 +570,16 @@ async fn rocket() -> _ {
                 unprocessable_entity,
                 not_found,
                 internal_error
+            ],
+        )
+        // MCP (Model Context Protocol) endpoint for Claude custom connectors.
+        .mount(
+            "/",
+            routes![
+                mcp::mcp_get,
+                mcp::mcp_get_token,
+                mcp::mcp_post,
+                mcp::mcp_post_token,
             ],
         )
 }
