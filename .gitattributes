@@ -3,6 +3,17 @@
 # diffs when switching between WSL and native Windows on the same checkout.
 * text=auto
 
+# Force LF for files that tooling always writes as LF (npm, cargo) so
+# Windows checkouts don't trigger CRLF-conversion warnings on every
+# lockfile bump.
+*.json text eol=lf
+*.lock text eol=lf
+package-lock.json text eol=lf
+Cargo.lock text eol=lf
+
+# Shell scripts must be LF — bash chokes on CRLF (`bad interpreter`).
+*.sh text eol=lf
+
 *.png binary
 *.jpg binary
 *.jpeg binary
