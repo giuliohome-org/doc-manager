@@ -4,6 +4,11 @@ A zero-knowledge document vault backed by Azure Blob Storage, with a built-in
 **MCP server** so you can add, read and search your docs straight from a
 Claude conversation.
 
+<p align="center">
+  <img alt="Claude on the left creates a document through the Doc Manager MCP connector; the web UI on the right shows it instantly in the vault" src="https://github.com/user-attachments/assets/5deab74c-b3a0-4b17-b101-c0f287e2eb68" />
+</p>
+<p align="center"><sub><i>Talk to your docs through Claude — create from chat, see it in the vault instantly.</i></sub></p>
+
 - **Zero-knowledge by design** — documents and attachments are encrypted in the
   browser with AES-256-GCM (PBKDF2-SHA256, 600k iterations); the password never
   leaves the client.
