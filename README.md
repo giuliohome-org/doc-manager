@@ -17,8 +17,6 @@ Claude conversation.
 - **One Rust binary** — Rocket backend + React 19 / Vite 8 frontend, deployable
   to Azure Container Apps, plain Docker, or `containerd` + Kaniko in a homelab.
 
-Live demo: <https://doc-manager.giuliohome.com>
-
 ---
 
 ## Talking to your docs through Claude
