@@ -1,0 +1,16 @@
+# Normalize line endings to LF in the repo, let working tree use the
+# platform default (CRLF on Windows, LF on WSL/Linux). This avoids spurious
+# diffs when switching between WSL and native Windows on the same checkout.
+* text=auto
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
