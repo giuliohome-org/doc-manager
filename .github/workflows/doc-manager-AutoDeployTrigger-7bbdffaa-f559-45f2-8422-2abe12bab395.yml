@@ -4,8 +4,8 @@ name: Trigger auto deployment for doc-manager
 on:
   # Automatically trigger it when detected changes in repo
   push:
-    branches: 
-      [ main ]
+    branches:
+      [ main, doc-manger_Opus4.7 ]
     paths:
     - '**'
     - '.github/workflows/doc-manager-AutoDeployTrigger-7bbdffaa-f559-45f2-8422-2abe12bab395.yml'
@@ -56,9 +56,11 @@ jobs:
               --password-stdin
 
       # ----------------------------------------
-      # Tag and push latest + e2e
+      # Tag and push latest + e2e (main only — branch deploys
+      # roll out the SHA-tagged image without clobbering prod tags)
       # ----------------------------------------
       - name: Tag and push latest + e2e
+        if: github.ref == 'refs/heads/main'
         run: |
           docker pull giuliohome/doc-manager:${{ github.sha }}
           docker tag giuliohome/doc-manager:${{ github.sha }} giuliohome/doc-manager:latest

@@ -2,6 +2,7 @@
 extern crate rocket;
 
 mod mcp;
+mod oauth;
 
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::*;
@@ -545,7 +546,19 @@ async fn rocket() -> _ {
         println!("MCP endpoint disabled (set MCP_BEARER_TOKEN to enable).");
     }
 
-    rocket::build()
+    let oauth_config = match oauth::OAuthConfig::from_env() {
+        Ok(cfg) => cfg,
+        Err(e) => panic!("OAuth config error: {e}"),
+    };
+    if let Some(cfg) = &oauth_config {
+        println!(
+            "MCP OAuth validation enabled: provider={}, allowlist={:?}",
+            cfg.provider.as_str(),
+            cfg.allowed_users
+        );
+    }
+
+    let mut server = rocket::build()
         .manage(azure_client)
         .attach(cors)
         // Serve React static files
@@ -581,5 +594,20 @@ async fn rocket() -> _ {
                 mcp::mcp_post,
                 mcp::mcp_post_token,
             ],
-        )
+        );
+
+    if let Some(cfg) = oauth_config {
+        server = server
+            .manage(cfg)
+            .manage(oauth::OAuthState::default())
+            .mount(
+                "/",
+                routes![
+                    oauth::protected_resource_metadata,
+                    oauth::authorization_server_metadata,
+                ],
+            );
+    }
+
+    server
 }

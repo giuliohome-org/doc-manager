@@ -4,6 +4,15 @@
 //! `POST /mcp/<token>` (URL-auth, for clients like Claude.ai's custom-connector
 //! UI that don't support a static-bearer header field).
 //!
+//! Auth on `POST /mcp` accepts two forms in this order:
+//!   1. `Authorization: Bearer <MCP_BEARER_TOKEN>` (matches the static token).
+//!   2. `Authorization: Bearer <upstream-IdP-token>` (validated via the
+//!      OAuth module — currently GitHub `/user` with a 5-min cache).
+//! If neither matches and OAuth is configured, the response is
+//! `401 Unauthorized` with `WWW-Authenticate: Bearer realm="MCP",
+//! resource_metadata="<base>/.well-known/oauth-protected-resource"`,
+//! which is what triggers Claude.ai to start its OAuth dance.
+//!
 //! Encryption interplay: documents stored via the React UI use client-side
 //! zero-knowledge AES-GCM (content prefix `DMENC1:` or attachment named
 //! `*_dmencblob`). The MCP server never holds the password, so encrypted docs
@@ -11,9 +20,10 @@
 //! returned, and writes refuse to overwrite them. By design: encrypted = "not
 //! shareable with Claude", plaintext = "shareable with Claude".
 
+use crate::oauth::{self, AuthError, OAuthConfig, OAuthState};
 use crate::AzureClient;
 use futures::stream::StreamExt;
-use rocket::http::Status;
+use rocket::http::{Header, Status};
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::response::{self, Responder, Response};
 use rocket::serde::json::{json, Json, Value};
@@ -63,28 +73,69 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-// ---------- Bearer-header auth guard ----------
+// ---------- Bearer-header guard ----------
+//
+// We don't validate inside the guard any more — the handler runs the auth
+// flow itself so it can choose between static-bearer and OAuth, and so it
+// can return a 401 with a custom `WWW-Authenticate` header.
 
-pub struct McpAuth;
+pub struct PresentedBearer(pub Option<String>);
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for McpAuth {
+impl<'r> FromRequest<'r> for PresentedBearer {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let Some(expected) = expected_token() else {
-            return Outcome::Error((Status::ServiceUnavailable, ()));
-        };
-        let presented = req
+        let token = req
             .headers()
             .get_one("Authorization")
             .and_then(|h| h.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if ct_eq(presented.as_bytes(), expected.as_bytes()) {
-            Outcome::Success(McpAuth)
-        } else {
-            Outcome::Error((Status::Unauthorized, ()))
+            .map(str::to_string);
+        Outcome::Success(PresentedBearer(token))
+    }
+}
+
+async fn authenticate(
+    presented: &str,
+    oauth_cfg: Option<&State<OAuthConfig>>,
+    oauth_state: Option<&State<OAuthState>>,
+) -> Result<(), McpHttp> {
+    let static_token = expected_token();
+
+    if let Some(expected) = static_token.as_deref() {
+        if !presented.is_empty() && ct_eq(presented.as_bytes(), expected.as_bytes()) {
+            return Ok(());
         }
+    }
+
+    if let (Some(cfg), Some(state)) = (oauth_cfg, oauth_state) {
+        if !presented.is_empty() {
+            match oauth::validate_bearer(presented, cfg.inner(), state.inner()).await {
+                Ok(user) => {
+                    println!("[mcp] auth ok: user={}", user.login);
+                    return Ok(());
+                }
+                Err(AuthError::Forbidden(msg)) => {
+                    eprintln!("[mcp] auth forbidden: {msg}");
+                    return Err(McpHttp::Status(Status::Forbidden));
+                }
+                Err(AuthError::Unauthorized(msg)) => {
+                    eprintln!("[mcp] auth unauthorized: {msg}");
+                }
+                Err(AuthError::Upstream(msg)) => {
+                    eprintln!("[mcp] auth upstream error: {msg}");
+                }
+            }
+        }
+        return Err(McpHttp::Unauthorized {
+            www_authenticate: Some(oauth::www_authenticate_header(cfg.inner())),
+        });
+    }
+
+    if static_token.is_some() {
+        Err(McpHttp::Unauthorized { www_authenticate: None })
+    } else {
+        Err(McpHttp::Status(Status::ServiceUnavailable))
     }
 }
 
@@ -120,11 +171,18 @@ impl McpError {
     }
 }
 
-// ---------- Custom responder so notifications return 202 ----------
+// ---------- Custom responder ----------
+//
+// `Body` is the JSON-RPC success body, `Accepted` is the 202 we use for
+// notifications, `Unauthorized` carries an optional `WWW-Authenticate`
+// header (set when OAuth is configured), and `Status` is a thin escape
+// hatch for raw status codes (403, 405, 503).
 
 pub enum McpHttp {
     Body(Value),
     Accepted,
+    Unauthorized { www_authenticate: Option<String> },
+    Status(Status),
 }
 
 impl<'r> Responder<'r, 'static> for McpHttp {
@@ -132,6 +190,15 @@ impl<'r> Responder<'r, 'static> for McpHttp {
         match self {
             McpHttp::Body(v) => Json(v).respond_to(req),
             McpHttp::Accepted => Response::build().status(Status::Accepted).ok(),
+            McpHttp::Unauthorized { www_authenticate } => {
+                let mut r = Response::build();
+                r.status(Status::Unauthorized);
+                if let Some(value) = www_authenticate {
+                    r.header(Header::new("WWW-Authenticate", value));
+                }
+                r.ok()
+            }
+            McpHttp::Status(s) => Response::build().status(s).ok(),
         }
     }
 }
@@ -139,9 +206,17 @@ impl<'r> Responder<'r, 'static> for McpHttp {
 // ---------- Routes ----------
 
 #[get("/mcp")]
-pub fn mcp_get(_auth: McpAuth) -> Status {
+pub async fn mcp_get(
+    bearer: PresentedBearer,
+    oauth_cfg: Option<&State<OAuthConfig>>,
+    oauth_state: Option<&State<OAuthState>>,
+) -> McpHttp {
+    let token = bearer.0.as_deref().unwrap_or("");
+    if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+        return resp;
+    }
     // Server-initiated SSE streams not supported; clients should POST.
-    Status::MethodNotAllowed
+    McpHttp::Status(Status::MethodNotAllowed)
 }
 
 #[get("/mcp/<token>")]
@@ -155,10 +230,16 @@ pub fn mcp_get_token(token: &str) -> Status {
 
 #[post("/mcp", data = "<req>")]
 pub async fn mcp_post(
-    _auth: McpAuth,
+    bearer: PresentedBearer,
+    oauth_cfg: Option<&State<OAuthConfig>>,
+    oauth_state: Option<&State<OAuthState>>,
     req: Json<JsonRpcRequest>,
     client: &State<AzureClient>,
 ) -> McpHttp {
+    let token = bearer.0.as_deref().unwrap_or("");
+    if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+        return resp;
+    }
     handle(req.into_inner(), client.inner()).await
 }
 

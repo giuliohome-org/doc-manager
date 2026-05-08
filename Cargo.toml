@@ -12,3 +12,6 @@ rocket_cors = "0.6.0"
 azure_storage_blobs = "0.21.0"
 azure_storage = "0.21.0"
 futures = "0.3.31"
+# OAuth bearer validation for /mcp (GitHub IdP; Auth0 reserved)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"

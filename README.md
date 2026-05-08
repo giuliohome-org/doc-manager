@@ -65,6 +65,46 @@ plaintext = "shareable with Claude".
 If `MCP_BEARER_TOKEN` is unset the endpoint replies `503 Service Unavailable`,
 so the MCP surface is fully opt-in.
 
+### OAuth via GitHub (recommended for Claude.ai)
+
+The static token in the URL is convenient for `curl` but leaks via browser
+history and server logs, has no notion of identity, and rotating it means
+re-pasting the URL into every connector. Claude.ai's *advanced settings*
+when adding a custom connector accept an OAuth **Client ID + Client Secret**,
+which lets Claude.ai run a real OAuth 2.1 + PKCE flow against an upstream
+identity provider on your behalf — and our server just **validates** the
+resulting bearer.
+
+We support **GitHub** as the IdP today (Auth0 reserved for a future round —
+the code is provider-shaped). The flow:
+
+1. **Register a GitHub OAuth App.** GitHub → *Settings* → *Developer
+   settings* → *OAuth Apps* → *New OAuth App*. Set:
+   - *Authorization callback URL*: `https://claude.ai/api/mcp/auth_callback`
+   - Copy the *Client ID* and generate a *Client Secret*.
+2. **Configure the server** (env vars on the container app):
+   ```sh
+   export OAUTH_PROVIDER=github
+   export OAUTH_PUBLIC_BASE_URL=https://doc-manager.giuliohome.com
+   export OAUTH_ALLOWED_USERS=giuliohome    # comma-separated GitHub logins
+   ```
+   `OAUTH_ALLOWED_USERS` is **required** — an empty allowlist refuses to
+   start, so a misconfiguration cannot silently let any GitHub user in.
+3. **Add the connector in Claude.ai** with URL
+   `https://doc-manager.giuliohome.com/mcp` (no token in the path this
+   time), open *Advanced settings*, and paste the GitHub OAuth App's
+   Client ID + Client Secret.
+4. The first request triggers the OAuth dance: Claude.ai gets a `401`
+   with a `WWW-Authenticate` header pointing at our metadata endpoints,
+   discovers the GitHub authorize/token URLs, walks you through
+   `github.com/login/oauth/authorize`, and forwards the resulting bearer
+   on every subsequent `/mcp` call. The server validates by calling
+   `https://api.github.com/user` (5-min cache, hashed token key).
+
+The static-bearer path keeps working alongside OAuth — `curl` and Claude
+Code can still authenticate with `Authorization: Bearer $MCP_BEARER_TOKEN`,
+and `/mcp/<token>` still works for clients without a header field.
+
 ### Quick smoke test
 
 ```sh
@@ -122,13 +162,16 @@ sudo ctr t start doc-manager
 
 ## Configuration reference
 
-| Env var                       | Required           | Purpose                                                            |
-| ----------------------------- | ------------------ | ------------------------------------------------------------------ |
-| `AZURE_STORAGE_ACCOUNT`       | yes                | Azure Storage account name (container `documents` is auto-created) |
-| `AZURE_STORAGE_ACCESS_KEY`    | yes                | Storage access key                                                 |
-| `RUST_ROCKET_EXACT_ORIGIN`    | yes                | CORS origin for the React frontend                                 |
-| `MCP_BEARER_TOKEN`            | no (enables MCP)   | Token required by the `/mcp` endpoint                              |
-| `MCP_READ_ONLY`               | no (default false) | When `true`/`1`/`yes`, hides create/update MCP tools               |
+| Env var                       | Required                | Purpose                                                                                          |
+| ----------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `AZURE_STORAGE_ACCOUNT`       | yes                     | Azure Storage account name (container `documents` is auto-created)                               |
+| `AZURE_STORAGE_ACCESS_KEY`    | yes                     | Storage access key                                                                               |
+| `RUST_ROCKET_EXACT_ORIGIN`    | yes                     | CORS origin for the React frontend                                                               |
+| `MCP_BEARER_TOKEN`            | no (enables MCP)        | Static token accepted as `Authorization: Bearer …` or `/mcp/<token>`                             |
+| `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
+| `OAUTH_PROVIDER`              | no (enables OAuth)      | `github` (Auth0 reserved for future)                                                             |
+| `OAUTH_PUBLIC_BASE_URL`       | with `OAUTH_PROVIDER`   | Public base URL of this server, e.g. `https://doc-manager.giuliohome.com`                        |
+| `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | Comma-separated GitHub logins; **must list at least one user** — empty refuses to start          |
 
 ## End-to-end tests
 
