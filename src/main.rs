@@ -533,29 +533,27 @@ async fn rocket() -> _ {
     .to_cors()
     .expect("CORS configuration failed");
 
-    if env::var("MCP_BEARER_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
-        let mode = if env::var("MCP_READ_ONLY").ok().as_deref()
-            .map(|v| matches!(v, "1" | "true" | "TRUE" | "yes")).unwrap_or(false)
-        {
-            "read-only"
-        } else {
-            "full CRUD"
-        };
-        println!("MCP endpoint enabled at /mcp ({mode}).");
-    } else {
-        println!("MCP endpoint disabled (set MCP_BEARER_TOKEN to enable).");
-    }
-
     let oauth_config = match oauth::OAuthConfig::from_env() {
         Ok(cfg) => cfg,
         Err(e) => panic!("OAuth config error: {e}"),
     };
-    if let Some(cfg) = &oauth_config {
-        println!(
-            "MCP OAuth validation enabled: provider={}, allowlist={:?}",
-            cfg.provider.as_str(),
-            cfg.allowed_users
-        );
+    match &oauth_config {
+        Some(cfg) => {
+            let mode = if env::var("MCP_READ_ONLY").ok().as_deref()
+                .map(|v| matches!(v, "1" | "true" | "TRUE" | "yes"))
+                .unwrap_or(false)
+            {
+                "read-only"
+            } else {
+                "full CRUD"
+            };
+            println!(
+                "MCP endpoint enabled at /mcp ({mode}): provider={}, allowlist={:?}",
+                cfg.provider.as_str(),
+                cfg.allowed_users
+            );
+        }
+        None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=github to enable)."),
     }
 
     let mut server = rocket::build()
@@ -586,15 +584,7 @@ async fn rocket() -> _ {
             ],
         )
         // MCP (Model Context Protocol) endpoint for Claude custom connectors.
-        .mount(
-            "/",
-            routes![
-                mcp::mcp_get,
-                mcp::mcp_get_token,
-                mcp::mcp_post,
-                mcp::mcp_post_token,
-            ],
-        );
+        .mount("/", routes![mcp::mcp_get, mcp::mcp_post]);
 
     if let Some(cfg) = oauth_config {
         server = server

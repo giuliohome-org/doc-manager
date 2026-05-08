@@ -22,10 +22,11 @@ Claude conversation.
 ## Talking to your docs through Claude
 
 The same Rust process exposes a Streamable-HTTP [Model Context Protocol]
-(https://modelcontextprotocol.io) server at `/mcp`, guarded by a bearer token
-of your choosing. Encrypted documents stay private (their content is never
-returned to Claude); plaintext documents become first-class citizens in the
-chat.
+(https://modelcontextprotocol.io) server at `/mcp`, gated by an OAuth 2.1
+flow against an upstream identity provider (currently **GitHub** —
+Auth0 reserved for a future round, the code is provider-shaped).
+Encrypted documents stay private (their content is never returned to
+Claude); plaintext documents become first-class citizens in the chat.
 
 ### Tools
 
@@ -44,39 +45,12 @@ plaintext = "shareable with Claude".
 
 ### Add it to Claude
 
-1. Generate a strong random token and set it on your container app:
-   ```sh
-   export MCP_BEARER_TOKEN=$(openssl rand -hex 32)
-   # optional — disables create/update tools:
-   export MCP_READ_ONLY=true
-   ```
-2. **Claude.ai (web / desktop) custom connector** — Settings → Connectors →
-   Add custom connector, URL:
-   ```
-   https://doc-manager.giuliohome.com/mcp/<MCP_BEARER_TOKEN>
-   ```
-   The token-in-URL form is for clients without a bearer-header field.
-3. **Claude Code / MCP Inspector / curl** — header form:
-   ```
-   URL:    https://doc-manager.giuliohome.com/mcp
-   Header: Authorization: Bearer <MCP_BEARER_TOKEN>
-   ```
-
-If `MCP_BEARER_TOKEN` is unset the endpoint replies `503 Service Unavailable`,
-so the MCP surface is fully opt-in.
-
-### OAuth via GitHub (recommended for Claude.ai)
-
-The static token in the URL is convenient for `curl` but leaks via browser
-history and server logs, has no notion of identity, and rotating it means
-re-pasting the URL into every connector. Claude.ai's *advanced settings*
-when adding a custom connector accept an OAuth **Client ID + Client Secret**,
-which lets Claude.ai run a real OAuth 2.1 + PKCE flow against an upstream
-identity provider on your behalf — and our server just **validates** the
-resulting bearer.
-
-We support **GitHub** as the IdP today (Auth0 reserved for a future round —
-the code is provider-shaped). The flow:
+Claude.ai's custom-connector advanced settings accept an OAuth
+**Client ID + Client Secret** ([only those two
+fields](https://github.com/anthropics/claude-ai-mcp/issues/112)),
+so Claude.ai runs the full OAuth 2.1 + PKCE flow itself and our server
+only needs to (a) advertise the IdP via well-known metadata and (b)
+validate the resulting bearer.
 
 1. **Register a GitHub OAuth App.** GitHub → *Settings* → *Developer
    settings* → *OAuth Apps* → *New OAuth App*. Set:
@@ -86,33 +60,24 @@ the code is provider-shaped). The flow:
    ```sh
    export OAUTH_PROVIDER=github
    export OAUTH_PUBLIC_BASE_URL=https://doc-manager.giuliohome.com
-   export OAUTH_ALLOWED_USERS=giuliohome    # comma-separated GitHub logins
+   export OAUTH_ALLOWED_USERS=giuliohome     # comma-separated GitHub logins
+   # optional — disables create/update tools:
+   export MCP_READ_ONLY=true
    ```
    `OAUTH_ALLOWED_USERS` is **required** — an empty allowlist refuses to
    start, so a misconfiguration cannot silently let any GitHub user in.
-3. **Add the connector in Claude.ai** with URL
-   `https://doc-manager.giuliohome.com/mcp` (no token in the path this
-   time), open *Advanced settings*, and paste the GitHub OAuth App's
-   Client ID + Client Secret.
-4. The first request triggers the OAuth dance: Claude.ai gets a `401`
-   with a `WWW-Authenticate` header pointing at our metadata endpoints,
-   discovers the GitHub authorize/token URLs, walks you through
-   `github.com/login/oauth/authorize`, and forwards the resulting bearer
-   on every subsequent `/mcp` call. The server validates by calling
-   `https://api.github.com/user` (5-min cache, hashed token key).
+3. **Add the connector in Claude.ai** — Settings → Connectors → Add
+   custom connector, URL `https://doc-manager.giuliohome.com/mcp`, then
+   *Advanced settings* → paste the GitHub OAuth App's Client ID and
+   Client Secret. The first request triggers the OAuth dance: Claude.ai
+   sees the `401` + `WWW-Authenticate` from `/mcp`, fetches our
+   well-known metadata, walks you through `github.com/login/oauth/authorize`,
+   and forwards the resulting bearer on every subsequent call. The server
+   validates each request by calling `https://api.github.com/user` (5-min
+   cache, SHA-256-hashed token key).
 
-The static-bearer path keeps working alongside OAuth — `curl` and Claude
-Code can still authenticate with `Authorization: Bearer $MCP_BEARER_TOKEN`,
-and `/mcp/<token>` still works for clients without a header field.
-
-### Quick smoke test
-
-```sh
-curl -sS https://doc-manager.giuliohome.com/mcp \
-  -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
+If `OAUTH_PROVIDER` is unset the endpoint replies `503 Service Unavailable`,
+so the MCP surface is fully opt-in.
 
 ---
 
@@ -132,12 +97,17 @@ docker build -t giuliohome/doc-manager:latest .
 export AZURE_STORAGE_ACCOUNT=youraccount
 export AZURE_STORAGE_ACCESS_KEY=yourkey
 export RUST_ROCKET_EXACT_ORIGIN=http://localhost:8080
-export MCP_BEARER_TOKEN=$(openssl rand -hex 32)   # optional, enables /mcp
+# optional — enables the MCP endpoint:
+export OAUTH_PROVIDER=github
+export OAUTH_PUBLIC_BASE_URL=http://localhost:8080
+export OAUTH_ALLOWED_USERS=your-github-login
 docker run -p 8080:8080 \
   -e AZURE_STORAGE_ACCOUNT \
   -e AZURE_STORAGE_ACCESS_KEY \
   -e RUST_ROCKET_EXACT_ORIGIN \
-  -e MCP_BEARER_TOKEN \
+  -e OAUTH_PROVIDER \
+  -e OAUTH_PUBLIC_BASE_URL \
+  -e OAUTH_ALLOWED_USERS \
   giuliohome/doc-manager:latest
 ```
 
@@ -167,11 +137,10 @@ sudo ctr t start doc-manager
 | `AZURE_STORAGE_ACCOUNT`       | yes                     | Azure Storage account name (container `documents` is auto-created)                               |
 | `AZURE_STORAGE_ACCESS_KEY`    | yes                     | Storage access key                                                                               |
 | `RUST_ROCKET_EXACT_ORIGIN`    | yes                     | CORS origin for the React frontend                                                               |
-| `MCP_BEARER_TOKEN`            | no (enables MCP)        | Static token accepted as `Authorization: Bearer …` or `/mcp/<token>`                             |
-| `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
-| `OAUTH_PROVIDER`              | no (enables OAuth)      | `github` (Auth0 reserved for future)                                                             |
+| `OAUTH_PROVIDER`              | no (enables MCP)        | `github` (Auth0 reserved for future)                                                             |
 | `OAUTH_PUBLIC_BASE_URL`       | with `OAUTH_PROVIDER`   | Public base URL of this server, e.g. `https://doc-manager.giuliohome.com`                        |
 | `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | Comma-separated GitHub logins; **must list at least one user** — empty refuses to start          |
+| `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
 
 ## End-to-end tests
 
