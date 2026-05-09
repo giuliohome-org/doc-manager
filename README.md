@@ -35,8 +35,10 @@ Claude); plaintext documents become first-class citizens in the chat.
 | `list_documents`    | List every doc with `id`, `title`, `encrypted` flag, attachment info, size      | yes                          |
 | `get_document`      | Fetch one plaintext document by id; refuses encrypted ones                      | yes                          |
 | `search_documents`  | Case-insensitive substring search over titles (always) and plaintext content    | yes                          |
+| `get_attachment`    | Fetch the file attached to a doc (filename, bytes, base64, UTF-8 if applicable) | yes                          |
 | `create_document`   | Create a new plaintext document; returns the new id                             | no                           |
 | `update_document`   | Replace content (and optionally title) of a plaintext document                  | no                           |
+| `add_attachment`    | Attach a file (text or base64-encoded binary) to a doc; replaces any existing   | no                           |
 
 Encrypted documents are surfaced to Claude with `encrypted: true` so it can
 discover them by title, but their contents and writes are refused server-side.

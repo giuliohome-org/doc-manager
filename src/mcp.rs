@@ -17,6 +17,7 @@
 
 use crate::oauth::{self, AuthError, OAuthConfig, OAuthState};
 use crate::AzureClient;
+use base64::Engine as _;
 use futures::stream::StreamExt;
 use rocket::http::{Header, Status};
 use rocket::request::{FromRequest, Outcome, Request};
@@ -239,9 +240,13 @@ fn initialize_result() -> Value {
         "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
         "instructions": concat!(
             "Manage plaintext documents in the user's Azure Blob-backed vault. ",
+            "Each document can carry at most one file attachment (e.g. a markdown ",
+            "or text file). Use add_attachment to attach a file to an existing ",
+            "doc and get_attachment to read it. ",
             "Documents marked encrypted: true use client-side AES-GCM and cannot ",
             "be decrypted server-side; the password never leaves the user's browser. ",
-            "Encrypted documents can be listed and discovered by title but not read or overwritten."
+            "Encrypted documents can be listed and discovered by title but not read, ",
+            "overwritten, or attached to from the server."
         ),
     })
 }
@@ -281,6 +286,18 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "get_attachment",
+            "description": "Fetch the file attached to a plaintext document. Returns filename, byte size, base64-encoded content, and a UTF-8 text rendition when the bytes are valid UTF-8 (e.g. .md, .txt, .json). Refuses if the attachment is encrypted client-side (named '<id>_dmencblob').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document id (UUID) whose attachment you want."}
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
     ];
     if !read_only() {
         tools.push(json!({
@@ -310,6 +327,21 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             }
         }));
+        tools.push(json!({
+            "name": "add_attachment",
+            "description": "Attach a file to an existing plaintext document. Replaces any pre-existing attachment for that document (one attachment per doc by design). Refuses if the document is encrypted client-side. Provide either 'content' (UTF-8 text, e.g. markdown) or 'content_base64' (binary, base64-encoded).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Target document id (UUID)."},
+                    "filename": {"type": "string", "description": "Filename for the attachment, e.g. 'plan.md'. Must not contain path separators or equal the reserved name 'dmencblob'."},
+                    "content": {"type": "string", "description": "UTF-8 text content (mutually exclusive with content_base64)."},
+                    "content_base64": {"type": "string", "description": "Base64-encoded binary content (mutually exclusive with content)."}
+                },
+                "required": ["id", "filename"],
+                "additionalProperties": false
+            }
+        }));
     }
     json!({ "tools": tools })
 }
@@ -326,9 +358,11 @@ async fn tools_call(params: Option<Value>, client: &AzureClient) -> Result<Value
         "list_documents" => tool_list(client).await,
         "get_document" => tool_get(args, client).await,
         "search_documents" => tool_search(args, client).await,
+        "get_attachment" => tool_get_attachment(args, client).await,
         "create_document" if !read_only() => tool_create(args, client).await,
         "update_document" if !read_only() => tool_update(args, client).await,
-        "create_document" | "update_document" => {
+        "add_attachment" if !read_only() => tool_add_attachment(args, client).await,
+        "create_document" | "update_document" | "add_attachment" => {
             Err(McpError::forbidden("Server is in MCP_READ_ONLY mode"))
         }
         other => Err(McpError::method_not_found(&format!("tool {other}"))),
@@ -613,4 +647,148 @@ async fn tool_update(args: Value, client: &AzureClient) -> Result<String, McpErr
         "content_bytes": content.len(),
     }))
     .map_err(|e| McpError::internal(format!("serialize: {e}")))
+}
+
+fn validate_attachment_filename(name: &str) -> Result<(), McpError> {
+    if name.is_empty() {
+        return Err(McpError::invalid_params("'filename' must not be empty"));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(McpError::invalid_params(
+            "'filename' must not contain path separators",
+        ));
+    }
+    if name == ENC_FILE_BLOB_NAME {
+        return Err(McpError::invalid_params(format!(
+            "'filename' must not be the reserved encrypted-blob name '{ENC_FILE_BLOB_NAME}'"
+        )));
+    }
+    Ok(())
+}
+
+async fn find_attachment_blob(
+    client: &AzureClient,
+    id: &str,
+) -> Result<Option<String>, McpError> {
+    let prefix = format!("{id}_");
+    let names = list_blob_names(client).await?;
+    Ok(names
+        .into_iter()
+        .find(|n| n.starts_with(&prefix) && !n.starts_with("title_")))
+}
+
+async fn tool_add_attachment(args: Value, client: &AzureClient) -> Result<String, McpError> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::invalid_params("Missing 'id'"))?;
+    let filename = args
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::invalid_params("Missing 'filename'"))?;
+    validate_attachment_filename(filename)?;
+
+    let bytes: Vec<u8> = match (
+        args.get("content_base64").and_then(|v| v.as_str()),
+        args.get("content").and_then(|v| v.as_str()),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(McpError::invalid_params(
+                "Provide exactly one of 'content' or 'content_base64', not both",
+            ));
+        }
+        (Some(b64), None) => base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| McpError::invalid_params(format!("Invalid base64: {e}")))?,
+        (None, Some(text)) => text.as_bytes().to_vec(),
+        (None, None) => {
+            return Err(McpError::invalid_params(
+                "Provide either 'content' (UTF-8 text) or 'content_base64' (binary)",
+            ));
+        }
+    };
+
+    let main_content = client
+        .container_client
+        .blob_client(id)
+        .get_content()
+        .await
+        .map_err(|e| McpError::internal(format!("Document not found: {e}")))?;
+    let main_str = String::from_utf8_lossy(&main_content);
+    if is_encrypted_text(&main_str) {
+        return Err(McpError::forbidden(format!(
+            "Document {id} is encrypted client-side; refusing to attach a server-side file (would break the zero-knowledge convention)"
+        )));
+    }
+
+    if let Some(existing) = find_attachment_blob(client, id).await? {
+        let _ = client.container_client.blob_client(&existing).delete().await;
+    }
+
+    let blob_name = format!("{id}_{filename}");
+    client
+        .container_client
+        .blob_client(&blob_name)
+        .put_block_blob(bytes.clone())
+        .await
+        .map_err(|e| McpError::internal(format!("put attachment: {e}")))?;
+
+    serde_json::to_string_pretty(&json!({
+        "id": id,
+        "filename": filename,
+        "blob_name": blob_name,
+        "bytes": bytes.len(),
+        "status": "attached",
+    }))
+    .map_err(|e| McpError::internal(format!("serialize: {e}")))
+}
+
+async fn tool_get_attachment(args: Value, client: &AzureClient) -> Result<String, McpError> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::invalid_params("Missing 'id'"))?;
+
+    let attachment_name = find_attachment_blob(client, id)
+        .await?
+        .ok_or_else(|| McpError::internal(format!("No attachment for document {id}")))?;
+
+    if is_encrypted_file_id(&attachment_name, id) {
+        return Err(McpError::forbidden(format!(
+            "Attachment for document {id} is encrypted client-side; only the user's browser holds the key"
+        )));
+    }
+
+    let bytes = client
+        .container_client
+        .blob_client(&attachment_name)
+        .get_content()
+        .await
+        .map_err(|e| McpError::internal(format!("get attachment: {e}")))?;
+
+    let prefix = format!("{id}_");
+    let filename = attachment_name
+        .strip_prefix(&prefix)
+        .unwrap_or(&attachment_name)
+        .to_string();
+
+    let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let content_text = String::from_utf8(bytes.clone()).ok();
+
+    let mut payload = json!({
+        "id": id,
+        "filename": filename,
+        "blob_name": attachment_name,
+        "bytes": bytes.len(),
+        "content_base64": content_base64,
+    });
+    if let Some(t) = content_text {
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("content".to_string(), Value::String(t));
+    }
+
+    serde_json::to_string_pretty(&payload)
+        .map_err(|e| McpError::internal(format!("serialize: {e}")))
 }
