@@ -342,6 +342,30 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             }
         }));
+        tools.push(json!({
+            "name": "delete_document",
+            "description": "Delete a document and all of its associated blobs (main content, title, and any attachment). Works on encrypted documents too — deletion is destructive but does not disclose contents. Irreversible.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document id (UUID) to delete."}
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }));
+        tools.push(json!({
+            "name": "delete_attachment",
+            "description": "Delete the file attached to a document, leaving the document itself intact. No-op (with status: 'no_attachment') if the document has no attachment. Works on encrypted attachments too.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document id (UUID) whose attachment should be removed."}
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }));
     }
     json!({ "tools": tools })
 }
@@ -362,9 +386,10 @@ async fn tools_call(params: Option<Value>, client: &AzureClient) -> Result<Value
         "create_document" if !read_only() => tool_create(args, client).await,
         "update_document" if !read_only() => tool_update(args, client).await,
         "add_attachment" if !read_only() => tool_add_attachment(args, client).await,
-        "create_document" | "update_document" | "add_attachment" => {
-            Err(McpError::forbidden("Server is in MCP_READ_ONLY mode"))
-        }
+        "delete_document" if !read_only() => tool_delete_document(args, client).await,
+        "delete_attachment" if !read_only() => tool_delete_attachment(args, client).await,
+        "create_document" | "update_document" | "add_attachment" | "delete_document"
+        | "delete_attachment" => Err(McpError::forbidden("Server is in MCP_READ_ONLY mode")),
         other => Err(McpError::method_not_found(&format!("tool {other}"))),
     };
 
@@ -791,4 +816,68 @@ async fn tool_get_attachment(args: Value, client: &AzureClient) -> Result<String
 
     serde_json::to_string_pretty(&payload)
         .map_err(|e| McpError::internal(format!("serialize: {e}")))
+}
+
+async fn tool_delete_document(args: Value, client: &AzureClient) -> Result<String, McpError> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::invalid_params("Missing 'id'"))?;
+
+    client
+        .container_client
+        .blob_client(id)
+        .delete()
+        .await
+        .map_err(|e| McpError::internal(format!("Document not found: {e}")))?;
+
+    let _ = client
+        .container_client
+        .blob_client(&format!("title_{id}"))
+        .delete()
+        .await;
+
+    let attachment_deleted = match find_attachment_blob(client, id).await? {
+        Some(name) => {
+            let _ = client.container_client.blob_client(&name).delete().await;
+            Some(name)
+        }
+        None => None,
+    };
+
+    serde_json::to_string_pretty(&json!({
+        "id": id,
+        "status": "deleted",
+        "attachment_deleted": attachment_deleted,
+    }))
+    .map_err(|e| McpError::internal(format!("serialize: {e}")))
+}
+
+async fn tool_delete_attachment(args: Value, client: &AzureClient) -> Result<String, McpError> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::invalid_params("Missing 'id'"))?;
+
+    let Some(attachment_name) = find_attachment_blob(client, id).await? else {
+        return serde_json::to_string_pretty(&json!({
+            "id": id,
+            "status": "no_attachment",
+        }))
+        .map_err(|e| McpError::internal(format!("serialize: {e}")));
+    };
+
+    client
+        .container_client
+        .blob_client(&attachment_name)
+        .delete()
+        .await
+        .map_err(|e| McpError::internal(format!("delete attachment: {e}")))?;
+
+    serde_json::to_string_pretty(&json!({
+        "id": id,
+        "status": "deleted",
+        "blob_name": attachment_name,
+    }))
+    .map_err(|e| McpError::internal(format!("serialize: {e}")))
 }

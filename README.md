@@ -39,6 +39,8 @@ Claude); plaintext documents become first-class citizens in the chat.
 | `create_document`   | Create a new plaintext document; returns the new id                             | no                           |
 | `update_document`   | Replace content (and optionally title) of a plaintext document                  | no                           |
 | `add_attachment`    | Attach a file (text or base64-encoded binary) to a doc; replaces any existing   | no                           |
+| `delete_document`   | Delete a document and all its blobs (main, title, attachment); irreversible     | no                           |
+| `delete_attachment` | Delete only the attachment of a document, leaving the document itself intact    | no                           |
 
 Encrypted documents are surfaced to Claude with `encrypted: true` so it can
 discover them by title, but their contents and writes are refused server-side.
