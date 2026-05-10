@@ -447,12 +447,16 @@ export function DocumentEditor() {
                   is unrecoverable.
                 </p>
               )}
+              {isExistingEncrypted && (
+                <p className="text-xs text-gray-500">(read-only, from unlock)</p>
+              )}
               <input
                 type="password"
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border rounded text-black"
+                readOnly={isExistingEncrypted}
+                className={`w-full px-3 py-2 border rounded text-black ${isExistingEncrypted ? 'bg-gray-100 cursor-not-allowed' : ''}`}
               />
               {!isExistingEncrypted && (
                 <input
@@ -465,9 +469,16 @@ export function DocumentEditor() {
               )}
             </div>
           )}
-          {isExistingEncrypted && !encryptEnabled && (
+          {isExistingEncrypted && !encryptEnabled && !existingFileEncrypted && (
             <p className="mt-2 text-xs text-amber-700">
               ⚠️ Encryption is off. Saving will store this document as plaintext.
+            </p>
+          )}
+          {existingFileEncrypted && !encryptEnabled && (
+            <p className="mt-2 text-xs text-red-700">
+              ⚠️ Encryption is off but this document has an encrypted attachment.
+              {!file && " The encrypted file will remain on the server but will be unrecoverable without the original password."}
+              {file && " Uploading a new file will replace it."}
             </p>
           )}
         </div>
