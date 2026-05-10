@@ -654,6 +654,118 @@ describe('Encryption UI', () => {
     expect(screen.queryByText(/very private/i)).not.toBeInTheDocument();
   });
 
+  it('Issue #12: re-uploads decrypted attachment when toggling encryption off on existing doc', async () => {
+    const user = userEvent.setup();
+    const { encryptText, encryptFile } = await import('../crypto');
+
+    const docId = 'sync1234-aaaa-bbbb-cccc-000000000000';
+    const password = 'sync-pw';
+    const envelope = await encryptText(password, 'secret body');
+
+    const plainBytes = new Uint8Array([10, 20, 30, 40, 50]);
+    const plainFile = new File([plainBytes], 'data.bin');
+    const encWire = new Uint8Array(await (await encryptFile(password, plainFile)).arrayBuffer());
+
+    const fileId = `${docId}_dmencblob`;
+    const docResponse = { id: docId, title: 't', content: envelope, file_id: fileId };
+
+    global.fetch = vi.fn((url, opts) => {
+      if (opts && opts.method === 'PUT') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (typeof url === 'string' && url.includes(`/documents/download/${fileId}`)) {
+        return Promise.resolve({
+          ok: true,
+          blob: () => Promise.resolve(new Blob([encWire])),
+          arrayBuffer: () => Promise.resolve(encWire.buffer),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(docResponse) });
+    });
+
+    renderWithProviders(<DocumentEditor />, { route: `/edit/${docId}` });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /unlock/i })).toBeInTheDocument());
+    await user.type(screen.getByPlaceholderText(/password/i), password);
+    await user.click(screen.getByRole('button', { name: /unlock/i }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument());
+
+    // Toggle encryption off without uploading a new file.
+    await user.click(screen.getByLabelText(/keep encrypted with password/i));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
+      expect(putCall).toBeDefined();
+    });
+
+    const downloadCall = global.fetch.mock.calls.find(
+      c => typeof c[0] === 'string' && c[0].includes(`/documents/download/${fileId}`)
+    );
+    expect(downloadCall).toBeDefined();
+
+    const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
+    const uploadedFile = putCall[1].body.get('file');
+    expect(uploadedFile).toBeInstanceOf(File);
+    expect(uploadedFile.name).toBe('data.bin');
+    const uploadedBytes = new Uint8Array(await uploadedFile.arrayBuffer());
+    expect(Array.from(uploadedBytes)).toEqual(Array.from(plainBytes));
+    // Body content must be plaintext (no DMENC1: prefix) since we toggled off.
+    expect(putCall[1].body.get('content')).toBe('secret body');
+  });
+
+  it('Issue #12: re-uploads encrypted attachment when toggling encryption on for plaintext doc', async () => {
+    const user = userEvent.setup();
+    const { decryptFile } = await import('../crypto');
+
+    const docId = 'sync5678-aaaa-bbbb-cccc-000000000000';
+    const password = 'new-pw';
+    const fileId = `${docId}_notes.txt`;
+    const plainBytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const docResponse = { id: docId, title: 't', content: 'plain body', file_id: fileId };
+
+    global.fetch = vi.fn((url, opts) => {
+      if (opts && opts.method === 'PUT') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (typeof url === 'string' && url.includes(`/documents/download/${fileId}`)) {
+        return Promise.resolve({
+          ok: true,
+          blob: () => Promise.resolve(new Blob([plainBytes])),
+          arrayBuffer: () => Promise.resolve(plainBytes.buffer),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(docResponse) });
+    });
+
+    renderWithProviders(<DocumentEditor />, { route: `/edit/${docId}` });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument());
+
+    // Toggle encryption on, fill password, submit.
+    await user.click(screen.getByLabelText(/encrypt with a password/i));
+    await user.type(screen.getByPlaceholderText(/^password$/i), password);
+    await user.type(screen.getByPlaceholderText(/confirm password/i), password);
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
+      expect(putCall).toBeDefined();
+    });
+
+    const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
+    const uploadedFile = putCall[1].body.get('file');
+    expect(uploadedFile).toBeInstanceOf(File);
+    expect(uploadedFile.name).toBe('dmencblob'); // encryptFile renames to sentinel
+    const wire = new Uint8Array(await uploadedFile.arrayBuffer());
+    const { name, bytes } = await decryptFile(password, wire);
+    expect(name).toBe('notes.txt'); // original prefix-stripped name preserved
+    expect(Array.from(bytes)).toEqual(Array.from(plainBytes));
+    // Body must now be encrypted.
+    expect(putCall[1].body.get('content').startsWith('DMENC1:')).toBe(true);
+  });
+
   it('DocumentList marks encrypted docs with a lock badge and hides preview', async () => {
     const { encryptText } = await import('../crypto');
     const envelope = await encryptText('pw', 'should not be visible');
