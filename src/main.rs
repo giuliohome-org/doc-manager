@@ -410,6 +410,28 @@ async fn update_document(
                 }),
             )
         })?;
+
+        // Only after the new attachment is safely uploaded, drop any older
+        // attachment blobs for this document so the GET path can no longer
+        // ressuscitare un blob orfano (es. dopo cambio crypto state in #12).
+        if let Some(Ok(blob_list)) = client
+            .container_client
+            .list_blobs()
+            .into_stream()
+            .next()
+            .await
+        {
+            let prefix = format!("{}_", id);
+            for blobfile in blob_list.blobs.blobs() {
+                if blobfile.name.starts_with(&prefix) && blobfile.name != file_name {
+                    let _ = client
+                        .container_client
+                        .blob_client(&blobfile.name)
+                        .delete()
+                        .await;
+                }
+            }
+        }
     }
 
     Ok(Json(Document {

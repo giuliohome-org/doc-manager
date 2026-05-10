@@ -350,6 +350,26 @@ export function DocumentEditor() {
         if (file) payloadFile = await encryptFile(password, file);
       }
 
+      // Issue #12: keep doc body and attachment in lockstep when the user
+      // toggles encryption on an existing doc without uploading a new file.
+      if (existingFileId && !file && existingFileEncrypted !== encryptEnabled) {
+        const resp = await fetch(`${backendUrl}/documents/download/${existingFileId}`);
+        if (!resp.ok) throw new Error('Failed to fetch existing attachment for crypto sync');
+        const blob = await resp.blob();
+        if (existingFileEncrypted) {
+          const buf = new Uint8Array(await blob.arrayBuffer());
+          const { name, bytes } = await decryptFile(password, buf);
+          payloadFile = new File([bytes], name, { type: 'application/octet-stream' });
+        } else {
+          const namePrefix = `${id}_`;
+          const originalName = existingFileId.startsWith(namePrefix)
+            ? existingFileId.slice(namePrefix.length)
+            : existingFileId;
+          const plainFile = new File([blob], originalName, { type: blob.type || 'application/octet-stream' });
+          payloadFile = await encryptFile(password, plainFile);
+        }
+      }
+
       const url = isNew ? `${backendUrl}/documents` : `${backendUrl}/documents/${id}`;
       const method = isNew ? 'POST' : 'PUT';
       setEditing(false);
@@ -469,16 +489,10 @@ export function DocumentEditor() {
               )}
             </div>
           )}
-          {isExistingEncrypted && !encryptEnabled && !existingFileEncrypted && (
+          {isExistingEncrypted && !encryptEnabled && (
             <p className="mt-2 text-xs text-amber-700">
-              ⚠️ Encryption is off. Saving will store this document as plaintext.
-            </p>
-          )}
-          {existingFileEncrypted && !encryptEnabled && (
-            <p className="mt-2 text-xs text-red-700">
-              ⚠️ Encryption is off but this document has an encrypted attachment.
-              {!file && " The encrypted file will remain on the server but will be unrecoverable without the original password."}
-              {file && " Uploading a new file will replace it."}
+              ⚠️ Encryption is off. Saving will store the document and any
+              existing attachment as plaintext.
             </p>
           )}
         </div>
