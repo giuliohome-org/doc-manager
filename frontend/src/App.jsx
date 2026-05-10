@@ -382,7 +382,8 @@ export function DocumentEditor() {
 
   const existingFileId = data && data.file_id;
   const existingFileEncrypted = isEncryptedFileId(existingFileId, id);
-  const showEncryptToggle = isNew;
+
+  const isExistingEncrypted = !isNew && unlocked;
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
@@ -422,30 +423,38 @@ export function DocumentEditor() {
           className="mb-6"
         />
 
-        {showEncryptToggle && (
-          <div style={{ colorScheme: 'light' }} className="mb-6 p-4 border rounded-lg bg-gray-50 text-black">
-            <label className="flex items-center space-x-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={encryptEnabled}
-                onChange={(e) => setEncryptEnabled(e.target.checked)}
-              />
-              <span className="font-medium">🔒 Encrypt with a password</span>
-            </label>
-            {encryptEnabled && (
-              <div className="mt-3 space-y-2">
+        <div style={{ colorScheme: 'light' }} className={
+          encryptEnabled
+            ? "mb-6 p-4 border rounded-lg bg-gray-50 text-black"
+            : "mb-6 p-4 border rounded-lg bg-white text-black"
+        }>
+          <label className="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={encryptEnabled}
+              onChange={(e) => setEncryptEnabled(e.target.checked)}
+            />
+            <span className="font-medium">
+              {isExistingEncrypted ? "🔒 Keep encrypted with password" : "🔒 Encrypt with a password"}
+            </span>
+          </label>
+          {encryptEnabled && (
+            <div className="mt-3 space-y-2">
+              {!isExistingEncrypted && (
                 <p className="text-xs text-gray-600">
                   Text and attachment will be encrypted in your browser (AES-256-GCM).
                   The password is never sent to the server. If you lose it, the document
                   is unrecoverable.
                 </p>
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3 py-2 border rounded text-black"
-                />
+              )}
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 border rounded text-black"
+              />
+              {!isExistingEncrypted && (
                 <input
                   type="password"
                   placeholder="Confirm password"
@@ -453,14 +462,19 @@ export function DocumentEditor() {
                   onChange={(e) => setPasswordConfirm(e.target.value)}
                   className="w-full px-3 py-2 border rounded text-black"
                 />
-              </div>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )}
+          {isExistingEncrypted && !encryptEnabled && (
+            <p className="mt-2 text-xs text-amber-700">
+              ⚠️ Encryption is off. Saving will store this document as plaintext.
+            </p>
+          )}
+        </div>
 
-        {!isNew && unlocked && (
+        {isExistingEncrypted && encryptEnabled && (
           <div style={{ colorScheme: 'light' }} className="mb-6 p-3 border rounded-lg bg-green-50 text-sm text-gray-700">
-            This document is encrypted. Saving will re-encrypt with the same password.
+            This document is encrypted. Uncheck the toggle above to save it as plaintext, or keep it checked to re-encrypt.
           </div>
         )}
 
