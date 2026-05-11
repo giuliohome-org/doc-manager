@@ -276,6 +276,8 @@ export function DocumentEditor() {
   const [encryptEnabled, setEncryptEnabled] = useState(false);
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [oldPassword, setOldPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
 
   const [lockedContent, setLockedContent] = useState(null);
   const [unlocked, setUnlocked] = useState(false);
@@ -313,6 +315,7 @@ export function DocumentEditor() {
       const plain = await decryptText(pw, lockedContent);
       setContent(plain);
       setPassword(pw);
+      setOldPassword(pw);
       setEncryptEnabled(true);
       setUnlocked(true);
     } catch {
@@ -335,8 +338,12 @@ export function DocumentEditor() {
         window.alert('Password required to encrypt.');
         return;
       }
-      if (!unlocked && password !== passwordConfirm) {
+      if ((!unlocked || changingPassword) && password !== passwordConfirm) {
         window.alert('Passwords do not match.');
+        return;
+      }
+      if (changingPassword && password === oldPassword) {
+        window.alert('New password must differ from the current password.');
         return;
       }
     }
@@ -368,6 +375,13 @@ export function DocumentEditor() {
           const plainFile = new File([blob], originalName, { type: blob.type || 'application/octet-stream' });
           payloadFile = await encryptFile(password, plainFile);
         }
+      } else if (changingPassword && existingFileId && !file && existingFileEncrypted) {
+        const resp = await fetch(`${backendUrl}/documents/download/${existingFileId}`);
+        if (!resp.ok) throw new Error('Failed to fetch existing attachment for password change');
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        const { name, bytes } = await decryptFile(oldPassword, buf);
+        const plainFile = new File([bytes], name, { type: 'application/octet-stream' });
+        payloadFile = await encryptFile(password, plainFile);
       }
 
       const url = isNew ? `${backendUrl}/documents` : `${backendUrl}/documents/${id}`;
@@ -452,7 +466,10 @@ export function DocumentEditor() {
             <input
               type="checkbox"
               checked={encryptEnabled}
-              onChange={(e) => setEncryptEnabled(e.target.checked)}
+              onChange={(e) => {
+                setEncryptEnabled(e.target.checked);
+                if (!e.target.checked) setChangingPassword(false);
+              }}
             />
             <span className="font-medium">
               {isExistingEncrypted ? "🔒 Keep encrypted with password" : "🔒 Encrypt with a password"}
@@ -467,21 +484,50 @@ export function DocumentEditor() {
                   is unrecoverable.
                 </p>
               )}
-              {isExistingEncrypted && (
-                <p className="text-xs text-gray-500">(read-only, from unlock)</p>
+              {isExistingEncrypted && !changingPassword && (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">(read-only, from unlock)</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChangingPassword(true);
+                      setPassword('');
+                      setPasswordConfirm('');
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-700 underline bg-transparent border-0 p-0 cursor-pointer"
+                  >
+                    Change password
+                  </button>
+                </div>
+              )}
+              {isExistingEncrypted && changingPassword && (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-600">Enter a new password below.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChangingPassword(false);
+                      setPassword(oldPassword);
+                      setPasswordConfirm('');
+                    }}
+                    className="text-xs text-gray-600 hover:text-gray-800 underline bg-transparent border-0 p-0 cursor-pointer"
+                  >
+                    Cancel password change
+                  </button>
+                </div>
               )}
               <input
                 type="password"
-                placeholder="Password"
+                placeholder={changingPassword ? "New password" : "Password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                readOnly={isExistingEncrypted}
-                className={`w-full px-3 py-2 border rounded text-black ${isExistingEncrypted ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                readOnly={isExistingEncrypted && !changingPassword}
+                className={`w-full px-3 py-2 border rounded text-black ${isExistingEncrypted && !changingPassword ? 'bg-gray-100 cursor-not-allowed' : ''}`}
               />
-              {!isExistingEncrypted && (
+              {(!isExistingEncrypted || changingPassword) && (
                 <input
                   type="password"
-                  placeholder="Confirm password"
+                  placeholder={changingPassword ? "Confirm new password" : "Confirm password"}
                   value={passwordConfirm}
                   onChange={(e) => setPasswordConfirm(e.target.value)}
                   className="w-full px-3 py-2 border rounded text-black"
