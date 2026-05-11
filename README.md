@@ -1,5 +1,11 @@
 # Doc Manager
 
+<p align="center">
+  <a href="https://glama.ai/mcp/servers/giuliohome-org/doc-manager">
+    <img alt="doc-manager MCP server on Glama" src="https://glama.ai/mcp/servers/giuliohome-org/doc-manager/badges/card.svg" />
+  </a>
+</p>
+
 A zero-knowledge document vault backed by Azure Blob Storage, with a built-in
 **MCP server** so you can add, read and search your docs straight from a
 Claude conversation.
