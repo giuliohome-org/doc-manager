@@ -897,3 +897,91 @@ async fn tool_delete_attachment(args: Value, client: &AzureClient) -> Result<Str
     }))
     .map_err(|e| McpError::internal(format!("serialize: {e}")))
 }
+
+// ---------- stdio MCP transport ----------
+//
+// Glama and other registries wrap the server with `mcp-proxy --`, which
+// expects a stdio MCP child (newline-delimited JSON-RPC on stdin/stdout).
+// This loop reuses the same `dispatch()` as the HTTP `/mcp` route so the
+// two surfaces stay in lockstep.
+
+pub fn stdio_mode() -> bool {
+    if std::env::args().skip(1).any(|a| a == "--stdio") {
+        return true;
+    }
+    matches!(
+        env::var("MCP_STDIO").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
+}
+
+pub async fn run_stdio(client: &AzureClient) -> std::io::Result<()> {
+    use rocket::tokio::io::{AsyncBufReadExt, BufReader};
+
+    eprintln!("doc-manager: MCP stdio mode (ndjson on stdin/stdout)");
+
+    let stdin = rocket::tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
+    let mut stdout = rocket::tokio::io::stdout();
+    let mut buf = String::new();
+
+    loop {
+        buf.clear();
+        let n = reader.read_line(&mut buf).await?;
+        if n == 0 {
+            return Ok(()); // EOF
+        }
+        let line = buf.trim_end_matches(['\n', '\r']);
+        if line.is_empty() {
+            continue;
+        }
+
+        let req: JsonRpcRequest = match serde_json::from_str(line) {
+            Ok(r) => r,
+            Err(e) => {
+                write_line(
+                    &mut stdout,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": Value::Null,
+                        "error": {
+                            "code": -32700,
+                            "message": format!("Parse error: {e}"),
+                        }
+                    }),
+                )
+                .await?;
+                continue;
+            }
+        };
+
+        let id = req.id.clone();
+        let is_notification = id.is_none();
+        let result = dispatch(&req.method, req.params, client).await;
+        if is_notification {
+            continue;
+        }
+        let id = id.unwrap_or(Value::Null);
+        let resp = match result {
+            Ok(v) => json!({"jsonrpc": "2.0", "id": id, "result": v}),
+            Err(e) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": e.code, "message": e.message}
+            }),
+        };
+        write_line(&mut stdout, &resp).await?;
+    }
+}
+
+async fn write_line<W>(out: &mut W, v: &Value) -> std::io::Result<()>
+where
+    W: rocket::tokio::io::AsyncWrite + Unpin,
+{
+    use rocket::tokio::io::AsyncWriteExt;
+    let s = serde_json::to_string(v).expect("serialize JSON value");
+    out.write_all(s.as_bytes()).await?;
+    out.write_all(b"\n").await?;
+    out.flush().await?;
+    Ok(())
+}

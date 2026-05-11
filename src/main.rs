@@ -553,6 +553,16 @@ async fn rocket() -> _ {
 
     let azure_client = AzureClient { container_client };
 
+    if mcp::stdio_mode() {
+        match mcp::run_stdio(&azure_client).await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("MCP stdio mode failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let cors = CorsOptions {
         allowed_origins: AllowedOrigins::some_exact(&[
             //
