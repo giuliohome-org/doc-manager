@@ -602,8 +602,11 @@ async fn rocket() -> _ {
         None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=github to enable)."),
     }
 
+    let has_oauth = oauth_config.is_some();
     let mut server = rocket::build()
         .manage(azure_client)
+        .manage(oauth_config)
+        .manage(oauth::OAuthState::default())
         .attach(cors)
         // Serve React static files
         .mount("/", FileServer::from("./frontend/dist"))
@@ -632,17 +635,14 @@ async fn rocket() -> _ {
         // MCP (Model Context Protocol) endpoint for Claude custom connectors.
         .mount("/", routes![mcp::mcp_get, mcp::mcp_post]);
 
-    if let Some(cfg) = oauth_config {
-        server = server
-            .manage(cfg)
-            .manage(oauth::OAuthState::default())
-            .mount(
-                "/",
-                routes![
-                    oauth::protected_resource_metadata,
-                    oauth::authorization_server_metadata,
-                ],
-            );
+    if has_oauth {
+        server = server.mount(
+            "/",
+            routes![
+                oauth::protected_resource_metadata,
+                oauth::authorization_server_metadata,
+            ],
+        );
     }
 
     server

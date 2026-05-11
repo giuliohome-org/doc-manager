@@ -16,6 +16,7 @@
 //! empty allowlist cannot accidentally let any GitHub user in.
 
 use reqwest::Client;
+use rocket::http::Status;
 use rocket::serde::json::{json, Json, Value};
 use rocket::State;
 use sha2::{Digest, Sha256};
@@ -236,20 +237,26 @@ pub fn www_authenticate_header(config: &OAuthConfig) -> String {
 // ---------- Well-known metadata routes ----------
 
 #[get("/.well-known/oauth-protected-resource")]
-pub fn protected_resource_metadata(config: &State<OAuthConfig>) -> Json<Value> {
+pub fn protected_resource_metadata(
+    config: &State<Option<OAuthConfig>>,
+) -> Result<Json<Value>, Status> {
+    let config = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
     let scopes: Vec<&str> = match config.provider {
         Provider::GitHub => vec!["read:user"],
     };
-    Json(json!({
+    Ok(Json(json!({
         "resource": format!("{}/mcp", config.public_base_url),
         "authorization_servers": [config.public_base_url.clone()],
         "bearer_methods_supported": ["header"],
         "scopes_supported": scopes,
-    }))
+    })))
 }
 
 #[get("/.well-known/oauth-authorization-server")]
-pub fn authorization_server_metadata(config: &State<OAuthConfig>) -> Json<Value> {
+pub fn authorization_server_metadata(
+    config: &State<Option<OAuthConfig>>,
+) -> Result<Json<Value>, Status> {
+    let config = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
     let body = match config.provider {
         Provider::GitHub => json!({
             "issuer": "https://github.com",
@@ -261,5 +268,5 @@ pub fn authorization_server_metadata(config: &State<OAuthConfig>) -> Json<Value>
             "scopes_supported": ["read:user"],
         }),
     };
-    Json(body)
+    Ok(Json(body))
 }

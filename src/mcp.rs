@@ -82,16 +82,17 @@ impl<'r> FromRequest<'r> for PresentedBearer {
 
 async fn authenticate(
     presented: &str,
-    oauth_cfg: Option<&State<OAuthConfig>>,
-    oauth_state: Option<&State<OAuthState>>,
+    oauth_cfg: &State<Option<OAuthConfig>>,
+    oauth_state: &State<OAuthState>,
 ) -> Result<(), McpHttp> {
-    let (Some(cfg), Some(state)) = (oauth_cfg, oauth_state) else {
+    let Some(cfg) = oauth_cfg.inner().as_ref() else {
         // OAuth not configured: MCP endpoint is effectively disabled.
         return Err(McpHttp::Status(Status::ServiceUnavailable));
     };
+    let state = oauth_state.inner();
 
     if !presented.is_empty() {
-        match oauth::validate_bearer(presented, cfg.inner(), state.inner()).await {
+        match oauth::validate_bearer(presented, cfg, state).await {
             Ok(user) => {
                 println!("[mcp] auth ok: user={}", user.login);
                 return Ok(());
@@ -109,7 +110,7 @@ async fn authenticate(
         }
     }
     Err(McpHttp::Unauthorized {
-        www_authenticate: Some(oauth::www_authenticate_header(cfg.inner())),
+        www_authenticate: Some(oauth::www_authenticate_header(cfg)),
     })
 }
 
@@ -182,8 +183,8 @@ impl<'r> Responder<'r, 'static> for McpHttp {
 #[get("/mcp")]
 pub async fn mcp_get(
     bearer: PresentedBearer,
-    oauth_cfg: Option<&State<OAuthConfig>>,
-    oauth_state: Option<&State<OAuthState>>,
+    oauth_cfg: &State<Option<OAuthConfig>>,
+    oauth_state: &State<OAuthState>,
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
     if !public_introspect() {
@@ -198,8 +199,8 @@ pub async fn mcp_get(
 #[post("/mcp", data = "<req>")]
 pub async fn mcp_post(
     bearer: PresentedBearer,
-    oauth_cfg: Option<&State<OAuthConfig>>,
-    oauth_state: Option<&State<OAuthState>>,
+    oauth_cfg: &State<Option<OAuthConfig>>,
+    oauth_state: &State<OAuthState>,
     req: Json<JsonRpcRequest>,
     client: &State<AzureClient>,
 ) -> McpHttp {
