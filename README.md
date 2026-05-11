@@ -146,6 +146,7 @@ sudo ctr t start doc-manager
 | `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | Comma-separated GitHub logins; **must list at least one user** — empty refuses to start          |
 | `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
 | `MCP_PUBLIC_INTROSPECT`       | no (auto)               | Opens `/mcp` for unauthenticated `tools/list` only (calls are 403'd) so registries like Glama can probe. Auto-on when both `AZURE_STORAGE_ACCOUNT` and `OAUTH_PROVIDER` are unset; set `0` to force-disable. |
+| `MCP_STDIO`                   | no (default false)      | When `true`/`1`/`yes` (or pass `--stdio`), runs as a stdio MCP server (newline-delimited JSON-RPC on stdin/stdout) instead of starting the HTTP listener. Used by registries that wrap servers with `mcp-proxy`. |
 
 ## End-to-end tests
 
