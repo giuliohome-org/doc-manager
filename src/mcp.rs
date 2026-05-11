@@ -55,10 +55,11 @@ fn read_only() -> bool {
 }
 
 pub fn public_introspect() -> bool {
-    matches!(
-        env::var("MCP_PUBLIC_INTROSPECT").ok().as_deref(),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes")
-    )
+    match env::var("MCP_PUBLIC_INTROSPECT").ok().as_deref() {
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") => true,
+        Some("0") | Some("false") | Some("FALSE") | Some("no") => false,
+        _ => env::var("AZURE_STORAGE_ACCOUNT").is_err() && env::var("OAUTH_PROVIDER").is_err(),
+    }
 }
 
 // ---------- Bearer-header guard ----------
