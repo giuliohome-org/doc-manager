@@ -54,6 +54,13 @@ fn read_only() -> bool {
     )
 }
 
+pub fn public_introspect() -> bool {
+    matches!(
+        env::var("MCP_PUBLIC_INTROSPECT").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
+}
+
 // ---------- Bearer-header guard ----------
 
 pub struct PresentedBearer(pub Option<String>);
@@ -178,8 +185,10 @@ pub async fn mcp_get(
     oauth_state: Option<&State<OAuthState>>,
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
-    if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
-        return resp;
+    if !public_introspect() {
+        if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+            return resp;
+        }
     }
     // Server-initiated SSE streams not supported; clients should POST.
     McpHttp::Status(Status::MethodNotAllowed)
@@ -194,8 +203,10 @@ pub async fn mcp_post(
     client: &State<AzureClient>,
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
-    if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
-        return resp;
+    if !public_introspect() {
+        if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+            return resp;
+        }
     }
     handle(req.into_inner(), client.inner()).await
 }
@@ -228,6 +239,9 @@ async fn dispatch(
         "notifications/initialized" | "notifications/cancelled" => Ok(Value::Null),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list()),
+        "tools/call" if public_introspect() => Err(McpError::forbidden(
+            "Server is in public introspection mode. No document operations are available.",
+        )),
         "tools/call" => tools_call(params, client).await,
         m => Err(McpError::method_not_found(m)),
     }

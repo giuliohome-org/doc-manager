@@ -511,11 +511,25 @@ async fn download_document(
 
 #[launch]
 async fn rocket() -> _ {
-    let account = env::var("AZURE_STORAGE_ACCOUNT").expect("AZURE_STORAGE_ACCOUNT not set");
-    let access_key =
-        env::var("AZURE_STORAGE_ACCESS_KEY").expect("AZURE_STORAGE_ACCESS_KEY not set");
-    let exact_origin =
-        env::var("RUST_ROCKET_EXACT_ORIGIN").expect("RUST_ROCKET_EXACT_ORIGIN not set");
+    let public_introspect = mcp::public_introspect();
+
+    let (account, access_key) = if public_introspect {
+        (
+            env::var("AZURE_STORAGE_ACCOUNT").unwrap_or_else(|_| "devstoreaccount1".to_string()),
+            env::var("AZURE_STORAGE_ACCESS_KEY").unwrap_or_else(|_| "placeholderkey".to_string()),
+        )
+    } else {
+        (
+            env::var("AZURE_STORAGE_ACCOUNT").expect("AZURE_STORAGE_ACCOUNT not set"),
+            env::var("AZURE_STORAGE_ACCESS_KEY").expect("AZURE_STORAGE_ACCESS_KEY not set"),
+        )
+    };
+
+    let exact_origin = if public_introspect {
+        env::var("RUST_ROCKET_EXACT_ORIGIN").unwrap_or_else(|_| "http://localhost:8080".to_string())
+    } else {
+        env::var("RUST_ROCKET_EXACT_ORIGIN").expect("RUST_ROCKET_EXACT_ORIGIN not set")
+    };
     let container_name = "documents";
 
     let storage_credentials = StorageCredentials::access_key(account.clone(), access_key);
@@ -523,15 +537,17 @@ async fn rocket() -> _ {
     let container_client = blob_service_client.container_client(container_name);
 
     // Check if the container exists
-    match container_client.get_properties().await {
-        Ok(_) => {
-            // Container exists, no need to create it
-            println!("Container already exists.");
-        }
-        Err(_) => {
-            // Container doesn't exist, create it
-            println!("Container does not exist. Creating...");
-            container_client.create().await.unwrap(); // Handle unwrap appropriately
+    if public_introspect {
+        println!("MCP_PUBLIC_INTROSPECT mode: skipping Azure container init.");
+    } else {
+        match container_client.get_properties().await {
+            Ok(_) => {
+                println!("Container already exists.");
+            }
+            Err(_) => {
+                println!("Container does not exist. Creating...");
+                container_client.create().await.unwrap();
+            }
         }
     }
 
@@ -555,9 +571,14 @@ async fn rocket() -> _ {
     .to_cors()
     .expect("CORS configuration failed");
 
-    let oauth_config = match oauth::OAuthConfig::from_env() {
-        Ok(cfg) => cfg,
-        Err(e) => panic!("OAuth config error: {e}"),
+    let oauth_config = if public_introspect {
+        println!("MCP_PUBLIC_INTROSPECT mode: MCP endpoint open for introspection (tools/list etc.), document operations blocked.");
+        None
+    } else {
+        match oauth::OAuthConfig::from_env() {
+            Ok(cfg) => cfg,
+            Err(e) => panic!("OAuth config error: {e}"),
+        }
     };
     match &oauth_config {
         Some(cfg) => {
@@ -574,6 +595,9 @@ async fn rocket() -> _ {
                 cfg.provider.as_str(),
                 cfg.allowed_users
             );
+        }
+        None if public_introspect => {
+            println!("MCP endpoint at /mcp: public introspection mode (no OAuth, no document access).");
         }
         None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=github to enable)."),
     }
