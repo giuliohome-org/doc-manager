@@ -4,14 +4,14 @@ FROM node:22-slim AS frontend-build
 WORKDIR /frontend
 
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build
 
 ################################################################################
 # Stage 2: Build the Rust application
-FROM docker.io/rust:1.88-slim-bookworm AS build
+FROM docker.io/rust:1.94.1-slim-bookworm AS build
 
 ## cargo package name: customize here or provide via --build-arg
 ARG pkg=docs-app
@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     set -eux; \
-    cargo build --release; \
+    cargo build --release --locked; \
     objcopy --compress-debug-sections target/release/$pkg ./main
 
 ################################################################################

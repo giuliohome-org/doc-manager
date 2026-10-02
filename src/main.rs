@@ -3,10 +3,8 @@ extern crate rocket;
 
 mod mcp;
 mod oauth;
+mod storage;
 
-use azure_storage::StorageCredentials;
-use azure_storage_blobs::prelude::*;
-use futures::stream::StreamExt;
 use rocket::form::Form;
 use rocket::fs::FileServer;
 use rocket::fs::TempFile;
@@ -19,6 +17,7 @@ use rocket::Response;
 use rocket::State;
 use rocket_cors::{AllowedOrigins, CorsOptions};
 use std::env;
+use storage::{ContainerClient, ContainerStatus};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -94,15 +93,9 @@ async fn list_documents(
 ) -> Result<Json<Vec<Document>>, (Status, Json<ErrorResponse>)> {
     let mut documents = Vec::new();
 
-    let blob_list = match client
-        .container_client
-        .list_blobs()
-        .into_stream()
-        .next()
-        .await
-    {
-        Some(Ok(blob_list)) => blob_list,
-        Some(Err(e)) => {
+    let blob_names = match client.container_client.list_blob_names().await {
+        Ok(names) => names,
+        Err(e) => {
             eprintln!("Failed to list blobs: {}", e);
             return Err((
                 Status::InternalServerError,
@@ -111,22 +104,10 @@ async fn list_documents(
                 }),
             ));
         }
-        None => {
-            return Err((
-                Status::NotFound,
-                Json(ErrorResponse {
-                    message: "No blobs found".to_string(),
-                }),
-            ))
-        }
     };
 
-    for blob in blob_list
-        .blobs
-        .blobs()
-        .filter(|blob| !blob.name.contains('_'))
-    {
-        let blob_client = client.container_client.blob_client(blob.name.clone());
+    for blob_name in blob_names.iter().filter(|name| !name.contains('_')) {
+        let blob_client = client.container_client.blob_client(blob_name);
         let content = match blob_client.get_content().await {
             Ok(content) => content,
             Err(e) => {
@@ -140,16 +121,16 @@ async fn list_documents(
             }
         };
 
-        let title_blob_name = format!("title_{}", blob.name);
+        let title_blob_name = format!("title_{}", blob_name);
         let title = match client.container_client.blob_client(&title_blob_name).get_content().await {
             Ok(t) => String::from_utf8(t).unwrap_or_default(),
             Err(_) => String::new(),
         };
 
         let mut file_id = None;
-        for blobfile in blob_list.blobs.blobs() {
-            if blobfile.name.starts_with(&format!("{}_{}", blob.name, "")) {
-            file_id = Some(blobfile.name.clone());
+        for blobfile in &blob_names {
+            if blobfile.starts_with(&format!("{}_{}", blob_name, "")) {
+            file_id = Some(blobfile.clone());
             break;
             }
         }
@@ -164,7 +145,7 @@ async fn list_documents(
                 )
             })?;
         documents.push(Document {
-            id: blob.name.clone(),
+            id: blob_name.clone(),
             title,
             content: content_str,
             file_id: file_id,
@@ -199,15 +180,9 @@ async fn get_document(
                 Err(_) => String::new(),
             };
 
-            let blob_list = match client
-                .container_client
-                .list_blobs()
-                .into_stream()
-                .next()
-                .await
-            {
-                Some(Ok(blob_list)) => blob_list,
-                Some(Err(e)) => {
+            let blob_names = match client.container_client.list_blob_names().await {
+                Ok(names) => names,
+                Err(e) => {
                     eprintln!("Failed to list blobs: {}", e);
                     return Err((
                         Status::InternalServerError,
@@ -216,20 +191,12 @@ async fn get_document(
                         }),
                     ));
                 }
-                None => {
-                    return Err((
-                        Status::NotFound,
-                        Json(ErrorResponse {
-                            message: "No blobs found".to_string(),
-                        }),
-                    ))
-                }
             };
             // Search for the first blob with the same id part and a filename
             let mut file_id = None;
-            for blobfile in blob_list.blobs.blobs() {
-                if blobfile.name.starts_with(&format!("{}_{}", id, "")) {
-                file_id = Some(blobfile.name.clone());
+            for blobfile in &blob_names {
+                if blobfile.starts_with(&format!("{}_{}", id, "")) {
+                file_id = Some(blobfile.clone());
                 break;
                 }
             }
@@ -414,19 +381,13 @@ async fn update_document(
         // Only after the new attachment is safely uploaded, drop any older
         // attachment blobs for this document so the GET path can no longer
         // ressuscitare un blob orfano (es. dopo cambio crypto state in #12).
-        if let Some(Ok(blob_list)) = client
-            .container_client
-            .list_blobs()
-            .into_stream()
-            .next()
-            .await
-        {
+        if let Ok(blob_names) = client.container_client.list_blob_names().await {
             let prefix = format!("{}_", id);
-            for blobfile in blob_list.blobs.blobs() {
-                if blobfile.name.starts_with(&prefix) && blobfile.name != file_name {
+            for blobfile in &blob_names {
+                if blobfile.starts_with(&prefix) && *blobfile != file_name {
                     let _ = client
                         .container_client
-                        .blob_client(&blobfile.name)
+                        .blob_client(blobfile)
                         .delete()
                         .await;
                 }
@@ -532,22 +493,24 @@ async fn rocket() -> _ {
     };
     let container_name = "documents";
 
-    let storage_credentials = StorageCredentials::access_key(account.clone(), access_key);
-    let blob_service_client = BlobServiceClient::new(account, storage_credentials);
-    let container_client = blob_service_client.container_client(container_name);
+    let container_client = if public_introspect {
+        // Keep configured Azure access for REST, but allow credential-free MCP discovery.
+        ContainerClient::azure_for_introspection(&account, &access_key, container_name)
+    } else {
+        ContainerClient::azure(&account, &access_key, container_name)
+            .unwrap_or_else(|e| panic!("Azure storage configuration error: {e}"))
+    };
 
-    // Check if the container exists
     if public_introspect {
         println!("MCP_PUBLIC_INTROSPECT mode: skipping Azure container init.");
     } else {
-        match container_client.get_properties().await {
-            Ok(_) => {
-                println!("Container already exists.");
+        match container_client.ensure_container().await {
+            Ok(ContainerStatus::Exists) => println!("Container already exists."),
+            Ok(ContainerStatus::Created) => println!("Container did not exist. Created."),
+            Ok(ContainerStatus::AlreadyExists) => {
+                println!("Container was created concurrently; continuing.")
             }
-            Err(_) => {
-                println!("Container does not exist. Creating...");
-                container_client.create().await.unwrap();
-            }
+            Err(e) => panic!("Azure container init failed: {e}"),
         }
     }
 

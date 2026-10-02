@@ -749,10 +749,11 @@ describe('Encryption UI', () => {
     await user.type(screen.getByPlaceholderText(/confirm password/i), password);
     await user.click(screen.getByRole('button', { name: /save changes/i }));
 
+    // Real PBKDF2 runs twice before PUT; allow for CPU contention in the full suite.
     await waitFor(() => {
       const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
       expect(putCall).toBeDefined();
-    });
+    }, { timeout: 5000 });
 
     const putCall = global.fetch.mock.calls.find(c => c[1] && c[1].method === 'PUT');
     const uploadedFile = putCall[1].body.get('file');

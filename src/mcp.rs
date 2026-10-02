@@ -18,7 +18,6 @@
 use crate::oauth::{self, AuthError, OAuthConfig, OAuthState};
 use crate::AzureClient;
 use base64::Engine as _;
-use futures::stream::StreamExt;
 use rocket::http::{Header, Status};
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::response::{self, Responder, Response};
@@ -424,15 +423,11 @@ async fn tools_call(params: Option<Value>, client: &AzureClient) -> Result<Value
 // ---------- Tool implementations ----------
 
 async fn list_blob_names(client: &AzureClient) -> Result<Vec<String>, McpError> {
-    let mut stream = client.container_client.list_blobs().into_stream();
-    let mut names = Vec::new();
-    while let Some(page) = stream.next().await {
-        let page = page.map_err(|e| McpError::internal(format!("list_blobs: {e}")))?;
-        for b in page.blobs.blobs() {
-            names.push(b.name.clone());
-        }
-    }
-    Ok(names)
+    client
+        .container_client
+        .list_blob_names()
+        .await
+        .map_err(|e| McpError::internal(format!("list_blobs: {e}")))
 }
 
 async fn fetch_title(client: &AzureClient, id: &str) -> String {

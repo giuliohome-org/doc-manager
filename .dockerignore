@@ -1,0 +1,26 @@
+# VCS, editor and local agent settings
+.git
+.claude
+.vscode
+.idea
+
+# Build outputs: Rust is built in the image, frontend in stage 1
+target
+**/node_modules
+frontend/dist
+frontend/dist-ssr
+
+# Secrets, deployment manifests and local environment files
+k8s
+chat
+**/.env
+**/.env.*
+**/*.local
+**/*.pem
+**/*.key
+
+# Logs
+**/*.log
+
+# Local reference sources (never a build input)
+.task-reference
