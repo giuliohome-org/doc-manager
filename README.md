@@ -27,10 +27,10 @@ Claude conversation.
 
 ## Talking to your docs through Claude
 
-The same Rust process exposes a Streamable-HTTP [Model Context Protocol]
-(https://modelcontextprotocol.io) server at `/mcp`, gated by an OAuth 2.1
-flow against an upstream identity provider (currently **GitHub** —
-Auth0 reserved for a future round, the code is provider-shaped).
+The same Rust process exposes a Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io)
+server at `/mcp`. Users sign in with GitHub. Doc Manager issues a 15-minute
+access token bound to the exact MCP URL, the registered connector and the user's
+numeric GitHub ID. The endpoint verifies this binding on every HTTP request.
 Encrypted documents stay private (their content is never returned to
 Claude); plaintext documents become first-class citizens in the chat.
 
@@ -53,41 +53,32 @@ discover them by title, but their contents and writes are refused server-side.
 That keeps the zero-knowledge guarantee intact: encrypted = "private to me",
 plaintext = "shareable with Claude".
 
-### Add it to Claude
+### Connect ChatGPT or Claude
 
-Claude.ai's custom-connector advanced settings accept an OAuth
-**Client ID + Client Secret** ([only those two
-fields](https://github.com/anthropics/claude-ai-mcp/issues/112)),
-so Claude.ai runs the full OAuth 2.1 + PKCE flow itself and our server
-only needs to (a) advertise the IdP via well-known metadata and (b)
-validate the resulting bearer.
+1. Open the existing GitHub OAuth App for the connector. Add the exact
+   `<origin>/mcp/oauth/callback` redirect URI with wildcard matching disabled.
+   GitHub returns the sign-in result to Doc Manager at this address.
+2. Set `OAUTH_CONNECTOR_REDIRECT_URI` to the exact callback displayed by the
+   connector. Set `OAUTH_GITHUB_CLIENT_ID` to the public client ID of the
+   existing OAuth App. The connector keeps its client ID and secret. During
+   token exchange Doc Manager submits those credentials to GitHub over HTTPS.
+3. Set `OAUTH_GITHUB_USER_IDS` to the numeric IDs of the GitHub accounts that
+   may open the vault. Generate `OAUTH_TOKEN_KEY` from 32 cryptographically
+   random bytes encoded in standard base64. Supply it to every replica through
+   an Azure Container Apps secret reference. Rotating it invalidates sessions.
+4. Connect to `<origin>/mcp` and sign in with GitHub. When upgrading an existing
+   connector, reconnect once to obtain a Doc Manager token. Clients request
+   `mcp.access` and can request `offline_access` for renewal.
+5. If Azure Easy Auth protects the website, pass `/mcp`, `/mcp/*`,
+   `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-protected-resource`
+   and `/.well-known/oauth-authorization-server` through to Rocket.
+   Also pass the exact `/.well-known/openid-configuration` path through.
+   Clients probing OpenID discovery receive a public 404 and can use the
+   published OAuth authorization server metadata.
 
-1. **Register a GitHub OAuth App.** GitHub → *Settings* → *Developer
-   settings* → *OAuth Apps* → *New OAuth App*. Set:
-   - *Authorization callback URL*: `https://claude.ai/api/mcp/auth_callback`
-   - Copy the *Client ID* and generate a *Client Secret*.
-2. **Configure the server** (env vars on the container app):
-   ```sh
-   export OAUTH_PROVIDER=github
-   export OAUTH_PUBLIC_BASE_URL=https://doc-manager.giuliohome.com
-   export OAUTH_ALLOWED_USERS=giuliohome     # comma-separated GitHub logins
-   # optional — disables create/update tools:
-   export MCP_READ_ONLY=true
-   ```
-   `OAUTH_ALLOWED_USERS` is **required** — an empty allowlist refuses to
-   start, so a misconfiguration cannot silently let any GitHub user in.
-3. **Add the connector in Claude.ai** — Settings → Connectors → Add
-   custom connector, URL `https://doc-manager.giuliohome.com/mcp`, then
-   *Advanced settings* → paste the GitHub OAuth App's Client ID and
-   Client Secret. The first request triggers the OAuth dance: Claude.ai
-   sees the `401` + `WWW-Authenticate` from `/mcp`, fetches our
-   well-known metadata, walks you through `github.com/login/oauth/authorize`,
-   and forwards the resulting bearer on every subsequent call. The server
-   validates each request by calling `https://api.github.com/user` (5-min
-   cache, SHA-256-hashed token key).
-
-If `OAUTH_PROVIDER` is unset the endpoint replies `503 Service Unavailable`,
-so the MCP surface is fully opt-in.
+A push to `main` triggers the Azure deployment workflow. Configure the secret
+reference and OAuth environment variables on the candidate revision before
+moving traffic to it.
 
 ---
 
@@ -110,14 +101,20 @@ export RUST_ROCKET_EXACT_ORIGIN=http://localhost:8080
 # optional — enables the MCP endpoint:
 export OAUTH_PROVIDER=github
 export OAUTH_PUBLIC_BASE_URL=http://localhost:8080
-export OAUTH_ALLOWED_USERS=your-github-login
+export OAUTH_GITHUB_CLIENT_ID='your-github-oauth-client-id'
+export OAUTH_CONNECTOR_REDIRECT_URI='https://your-connector.example/oauth/callback'
+export OAUTH_GITHUB_USER_IDS='123456'
+export OAUTH_TOKEN_KEY="$(openssl rand -base64 32)"
 docker run -p 8080:8080 \
   -e AZURE_STORAGE_ACCOUNT \
   -e AZURE_STORAGE_ACCESS_KEY \
   -e RUST_ROCKET_EXACT_ORIGIN \
   -e OAUTH_PROVIDER \
   -e OAUTH_PUBLIC_BASE_URL \
-  -e OAUTH_ALLOWED_USERS \
+  -e OAUTH_GITHUB_CLIENT_ID \
+  -e OAUTH_CONNECTOR_REDIRECT_URI \
+  -e OAUTH_GITHUB_USER_IDS \
+  -e OAUTH_TOKEN_KEY \
   giuliohome/doc-manager:latest
 ```
 
@@ -147,9 +144,13 @@ sudo ctr t start doc-manager
 | `AZURE_STORAGE_ACCOUNT`       | yes                     | Azure Storage account name (container `documents` is auto-created)                               |
 | `AZURE_STORAGE_ACCESS_KEY`    | yes                     | Storage access key                                                                               |
 | `RUST_ROCKET_EXACT_ORIGIN`    | yes                     | CORS origin for the React frontend                                                               |
-| `OAUTH_PROVIDER`              | no (enables MCP)        | `github` (Auth0 reserved for future)                                                             |
+| `OAUTH_PROVIDER`              | no (enables MCP)        | `github` for GitHub login and Doc Manager access tokens |
 | `OAUTH_PUBLIC_BASE_URL`       | with `OAUTH_PROVIDER`   | Public base URL of this server, e.g. `https://doc-manager.giuliohome.com`                        |
-| `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | Comma-separated GitHub logins; **must list at least one user** — empty refuses to start          |
+| `OAUTH_GITHUB_CLIENT_ID`      | with `OAUTH_PROVIDER`   | Public client ID of the connector's GitHub OAuth App |
+| `OAUTH_CONNECTOR_REDIRECT_URI` | with `OAUTH_PROVIDER`  | Exact callback URL for the connector |
+| `OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI` | optional | Second exact callback for a connector sharing this GitHub OAuth client. Copy the URI displayed by that connector. |
+| `OAUTH_GITHUB_USER_IDS`       | with `OAUTH_PROVIDER`   | Comma-separated list of allowed numeric GitHub user IDs |
+| `OAUTH_TOKEN_KEY`             | with `OAUTH_PROVIDER`   | Standard base64 encoding of a shared 32-byte random encryption key |
 | `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
 | `MCP_PUBLIC_INTROSPECT`       | no (auto)               | Opens `/mcp` for unauthenticated `tools/list` only (calls are 403'd) so registries like Glama can probe. Auto-on when both `AZURE_STORAGE_ACCOUNT` and `OAUTH_PROVIDER` are unset; set `0` to force-disable. |
 | `MCP_STDIO`                   | no (default false)      | When `true`/`1`/`yes` (or pass `--stdio`), runs as a stdio MCP server (newline-delimited JSON-RPC on stdin/stdout) instead of starting the HTTP listener. Used by registries that wrap servers with `mcp-proxy`. |

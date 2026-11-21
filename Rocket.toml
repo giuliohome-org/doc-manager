@@ -13,6 +13,8 @@ limits."file/avi" = "10 MiB"
 
 
 [release]
+# OAuth callback query strings can contain short-lived authorization codes.
+log_level = "off"
 limits.bytes = "10 MiB"
 limits.string = "10 MiB"
 limits.form = "10 MiB"
