@@ -1,272 +1,288 @@
-//! OAuth bearer-token validation for the MCP endpoint.
-//!
-//! When `OAUTH_PROVIDER` is set, Claude.ai's custom-connector advanced
-//! settings hold the upstream Client ID + Client Secret and Claude.ai
-//! itself runs the OAuth 2.1 + PKCE flow directly against the IdP.
-//! This module's job on the server side is therefore minimal:
-//!
-//!   1. **Advertise** the IdP via the two well-known metadata endpoints
-//!      (RFC 9728 + RFC 8414) so Claude.ai can discover authorize/token
-//!      URLs after our 401 response.
-//!   2. **Validate** the bearer token Claude.ai eventually presents on
-//!      `/mcp` by calling the IdP's userinfo endpoint, with a short cache
-//!      keyed by SHA-256 of the token.
-//!
-//! Single-tenant by design: `OAUTH_ALLOWED_USERS` is required, so an
-//! empty allowlist cannot accidentally let any GitHub user in.
+//! Microsoft Entra v2 delegated access tokens for the Doc Manager MCP resource.
 
-use reqwest::Client;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use reqwest::{Client, Url};
 use rocket::http::Status;
 use rocket::serde::json::{json, Json, Value};
+use rocket::tokio::sync::Mutex;
 use rocket::State;
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
+use uuid::Uuid;
 
-const USERINFO_CACHE_TTL: Duration = Duration::from_secs(300);
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-const USER_AGENT: &str = concat!("doc-manager/", env!("CARGO_PKG_VERSION"));
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Provider {
-    GitHub,
-}
-
-impl Provider {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Provider::GitHub => "github",
-        }
-    }
-}
+const REQUIRED_SCOPE: &str = "mcp.access";
+const KEY_LIFETIME: Duration = Duration::from_secs(3600);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const ENTRA_AUTHORITY: &str = "https://login.microsoftonline.com";
 
 pub struct OAuthConfig {
-    pub provider: Provider,
-    pub public_base_url: String,
-    pub allowed_users: Vec<String>,
+    public_base_url: String,
+    tenant_id: String,
+    api_client_id: String,
+    connector_client_id: String,
+    allowed_users: Vec<String>,
+    issuer: String,
+    jwks_url: String,
     http: Client,
+    keys: Mutex<KeyCache>,
 }
 
 impl OAuthConfig {
-    /// Read config from env. `Ok(None)` means OAuth is opt-out (the
-    /// caller continues with the static-bearer path only). `Err(_)` means
-    /// the user *tried* to enable OAuth but the config is incomplete —
-    /// the caller should refuse to start.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Some(raw) = env::var("OAUTH_PROVIDER").ok().filter(|v| !v.is_empty()) else {
-            return Ok(None);
-        };
-        let provider = match raw.to_ascii_lowercase().as_str() {
-            "github" => Provider::GitHub,
-            other => {
-                return Err(format!(
-                    "OAUTH_PROVIDER='{other}' not supported (only 'github' is implemented today)"
-                ))
-            }
-        };
-
-        let public_base_url = env::var("OAUTH_PUBLIC_BASE_URL")
-            .map_err(|_| "OAUTH_PUBLIC_BASE_URL is required when OAUTH_PROVIDER is set".to_string())?
-            .trim_end_matches('/')
-            .to_string();
-        if public_base_url.is_empty() {
-            return Err("OAUTH_PUBLIC_BASE_URL must not be empty".into());
+        match env::var("OAUTH_PROVIDER").as_deref() {
+            Err(env::VarError::NotPresent) | Ok("") => return Ok(None),
+            Ok("entra") => (),
+            _ => return Err(
+                "OAUTH_PROVIDER must be entra; configure resource-bound tokens before enabling MCP"
+                    .into(),
+            ),
         }
+        let required =
+            |name| env::var(name).map_err(|_| format!("{name} is required for MCP OAuth"));
+        Self::new(
+            &required("OAUTH_PUBLIC_BASE_URL")?,
+            &required("OAUTH_TENANT_ID")?,
+            &required("OAUTH_API_CLIENT_ID")?,
+            &required("OAUTH_CONNECTOR_CLIENT_ID")?,
+            &required("OAUTH_ALLOWED_USERS")?,
+        )
+        .map(Some)
+    }
 
-        let allowed_users: Vec<String> = env::var("OAUTH_ALLOWED_USERS")
-            .unwrap_or_default()
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if allowed_users.is_empty() {
+    fn new(
+        base_url: &str,
+        tenant: &str,
+        api: &str,
+        connector: &str,
+        users: &str,
+    ) -> Result<Self, String> {
+        let base = Url::parse(base_url).map_err(|_| "invalid OAUTH_PUBLIC_BASE_URL")?;
+        let is_loopback = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if !(base.scheme() == "https" || base.scheme() == "http" && is_loopback)
+            || base.host().is_none()
+            || !base.username().is_empty()
+            || base.password().is_some()
+            || base.query().is_some()
+            || base.fragment().is_some()
+            || base.path() != "/"
+        {
             return Err(
-                "OAUTH_ALLOWED_USERS must list at least one user when OAUTH_PROVIDER is set"
+                "OAUTH_PUBLIC_BASE_URL must be an HTTPS origin (HTTP is allowed on loopback)"
                     .into(),
             );
         }
-
+        let guid = |name: &str, value: &str| {
+            Uuid::parse_str(value.trim())
+                .map(|id| id.to_string())
+                .map_err(|_| format!("{name} must contain Entra GUIDs"))
+        };
+        let tenant_id = guid("OAUTH_TENANT_ID", tenant)?;
+        let api_client_id = guid("OAUTH_API_CLIENT_ID", api)?;
+        let connector_client_id = guid("OAUTH_CONNECTOR_CLIENT_ID", connector)?;
+        if api_client_id == connector_client_id {
+            return Err(
+                "register separate Entra applications for the MCP API and connector".into(),
+            );
+        }
+        let allowed_users = users
+            .split(',')
+            .map(|id| guid("OAUTH_ALLOWED_USERS", id))
+            .collect::<Result<Vec<_>, _>>()?;
         let http = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(HTTP_TIMEOUT)
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| format!("reqwest client: {e}"))?;
-
-        Ok(Some(Self {
-            provider,
-            public_base_url,
+            .map_err(|e| format!("could not initialize the signing-key client: {e}"))?;
+        Ok(Self {
+            public_base_url: base.origin().ascii_serialization(),
+            issuer: format!("{ENTRA_AUTHORITY}/{tenant_id}/v2.0"),
+            jwks_url: format!("{ENTRA_AUTHORITY}/{tenant_id}/discovery/v2.0/keys"),
+            tenant_id,
+            api_client_id,
+            connector_client_id,
             allowed_users,
             http,
-        }))
+            keys: Mutex::default(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_jwks(mut self, url: String) -> Self {
+        self.jwks_url = url;
+        self
+    }
+
+    fn resource_scope(&self) -> String {
+        format!("{}/mcp/{REQUIRED_SCOPE}", self.public_base_url)
+    }
+
+    pub async fn validate_bearer(&self, token: &str) -> Result<(), AuthError> {
+        let header = decode_header(token).map_err(|_| AuthError::Unauthorized)?;
+        if header.alg != Algorithm::RS256 {
+            return Err(AuthError::Unauthorized);
+        }
+        let kid = header
+            .kid
+            .as_deref()
+            .filter(|kid| !kid.is_empty())
+            .ok_or(AuthError::Unauthorized)?;
+        let key = self.signing_key(kid).await?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_audience(&[&self.api_client_id]);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_required_spec_claims(&["aud", "iss", "exp", "nbf"]);
+        validation.validate_nbf = true;
+        validation.leeway = 0;
+        let claims = decode::<AccessClaims>(token, &key, &validation)
+            .map_err(|_| AuthError::Unauthorized)?
+            .claims;
+        if claims.ver != "2.0" || claims.tid != self.tenant_id || claims.aud != self.api_client_id {
+            return Err(AuthError::Unauthorized);
+        }
+        if claims.azp != self.connector_client_id || !self.allowed_users.contains(&claims.oid) {
+            return Err(AuthError::Forbidden);
+        }
+        if !claims
+            .scp
+            .as_deref()
+            .unwrap_or("")
+            .split_ascii_whitespace()
+            .any(|s| s == REQUIRED_SCOPE)
+        {
+            return Err(AuthError::InsufficientScope);
+        }
+        Ok(())
+    }
+
+    async fn signing_key(&self, kid: &str) -> Result<DecodingKey, AuthError> {
+        let mut cache = self.keys.lock().await;
+        let fresh = cache
+            .loaded_at
+            .is_some_and(|at| at.elapsed() < KEY_LIFETIME);
+        if fresh {
+            if let Some(key) = cache.keys.get(kid) {
+                return Ok(key.clone());
+            }
+        }
+        // Limit outbound fetches for unknown kids and share one refresh across concurrent requests.
+        if cache
+            .last_attempt
+            .is_some_and(|at| at.elapsed() < REFRESH_INTERVAL)
+        {
+            return Err(if fresh {
+                AuthError::Unauthorized
+            } else {
+                AuthError::KeyServiceUnavailable
+            });
+        }
+        cache.last_attempt = Some(Instant::now());
+        let response = self
+            .http
+            .get(&self.jwks_url)
+            .send()
+            .await
+            .map_err(|_| AuthError::KeyServiceUnavailable)?;
+        if !response.status().is_success() {
+            return Err(AuthError::KeyServiceUnavailable);
+        }
+        let jwks: KeySet = response
+            .json()
+            .await
+            .map_err(|_| AuthError::KeyServiceUnavailable)?;
+        let mut keys = HashMap::new();
+        for jwk in jwks.keys {
+            if jwk.kty != "RSA"
+                || jwk.usage.as_deref() != Some("sig")
+                || jwk.alg.as_deref().is_some_and(|alg| alg != "RS256")
+                || jwk.issuer.as_deref().is_some_and(|issuer| {
+                    issuer != self.issuer
+                        && issuer != "https://login.microsoftonline.com/{tenantid}/v2.0"
+                })
+            {
+                continue;
+            }
+            if let (Some(kid), Some(n), Some(e)) = (jwk.kid, jwk.n, jwk.e) {
+                let key = DecodingKey::from_rsa_components(&n, &e)
+                    .map_err(|_| AuthError::KeyServiceUnavailable)?;
+                keys.insert(kid, key);
+            }
+        }
+        if keys.is_empty() {
+            return Err(AuthError::KeyServiceUnavailable);
+        }
+        cache.keys = keys;
+        cache.loaded_at = Some(Instant::now());
+        cache.keys.get(kid).cloned().ok_or(AuthError::Unauthorized)
     }
 }
 
 #[derive(Default)]
-pub struct OAuthState {
-    cache: Mutex<HashMap<[u8; 32], CachedUser>>,
+struct KeyCache {
+    keys: HashMap<String, DecodingKey>,
+    last_attempt: Option<Instant>,
+    loaded_at: Option<Instant>,
 }
 
-struct CachedUser {
-    login: String,
-    fetched_at: SystemTime,
+#[derive(Deserialize)]
+struct KeySet {
+    keys: Vec<SigningKey>,
 }
 
-#[derive(Debug)]
+#[derive(Deserialize)]
+struct SigningKey {
+    kty: String,
+    #[serde(rename = "use")]
+    usage: Option<String>,
+    alg: Option<String>,
+    issuer: Option<String>,
+    kid: Option<String>,
+    n: Option<String>,
+    e: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AccessClaims {
+    aud: String,
+    ver: String,
+    tid: String,
+    azp: String,
+    oid: String,
+    scp: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum AuthError {
-    Unauthorized(String),
-    Forbidden(String),
-    Upstream(String),
-}
-
-pub struct AuthenticatedUser {
-    pub login: String,
-}
-
-fn token_key(token: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let out = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&out);
-    key
-}
-
-pub async fn validate_bearer(
-    token: &str,
-    config: &OAuthConfig,
-    state: &OAuthState,
-) -> Result<AuthenticatedUser, AuthError> {
-    if token.is_empty() {
-        return Err(AuthError::Unauthorized("missing bearer token".into()));
-    }
-
-    let key = token_key(token);
-
-    {
-        let mut cache = state.cache.lock().unwrap();
-        prune_cache(&mut cache);
-        if let Some(entry) = cache.get(&key) {
-            let login = entry.login.clone();
-            drop(cache);
-            return enforce_allowlist(login, config);
-        }
-    }
-
-    let login = match config.provider {
-        Provider::GitHub => fetch_github_login(&config.http, token).await?,
-    };
-
-    {
-        let mut cache = state.cache.lock().unwrap();
-        cache.insert(
-            key,
-            CachedUser {
-                login: login.clone(),
-                fetched_at: SystemTime::now(),
-            },
-        );
-    }
-
-    enforce_allowlist(login, config)
-}
-
-fn enforce_allowlist(login: String, config: &OAuthConfig) -> Result<AuthenticatedUser, AuthError> {
-    let allowed = config
-        .allowed_users
-        .iter()
-        .any(|u| u.eq_ignore_ascii_case(&login));
-    if !allowed {
-        return Err(AuthError::Forbidden(format!(
-            "user '{login}' not in OAUTH_ALLOWED_USERS"
-        )));
-    }
-    Ok(AuthenticatedUser { login })
-}
-
-fn prune_cache(cache: &mut HashMap<[u8; 32], CachedUser>) {
-    let now = SystemTime::now();
-    cache.retain(|_, v| {
-        v.fetched_at
-            .checked_add(USERINFO_CACHE_TTL)
-            .map(|exp| exp > now)
-            .unwrap_or(false)
-    });
-}
-
-async fn fetch_github_login(http: &Client, token: &str) -> Result<String, AuthError> {
-    let response = http
-        .get("https://api.github.com/user")
-        .bearer_auth(token)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| AuthError::Upstream(format!("github /user: {e}")))?;
-
-    let status = response.status();
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(AuthError::Unauthorized(format!(
-            "github rejected token: {status}"
-        )));
-    }
-    if !status.is_success() {
-        return Err(AuthError::Upstream(format!(
-            "github /user returned {status}"
-        )));
-    }
-
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|e| AuthError::Upstream(format!("github /user body: {e}")))?;
-    let login = body
-        .get("login")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AuthError::Upstream("github /user: no 'login' field".into()))?;
-    Ok(login.to_string())
+    Unauthorized,
+    Forbidden,
+    InsufficientScope,
+    KeyServiceUnavailable,
 }
 
 pub fn www_authenticate_header(config: &OAuthConfig) -> String {
     format!(
-        r#"Bearer realm="MCP", resource_metadata="{base}/.well-known/oauth-protected-resource""#,
-        base = config.public_base_url,
+        r#"Bearer realm="MCP", resource_metadata="{}/.well-known/oauth-protected-resource", scope="{} offline_access""#,
+        config.public_base_url,
+        config.resource_scope()
     )
 }
-
-// ---------- Well-known metadata routes ----------
 
 #[get("/.well-known/oauth-protected-resource")]
 pub fn protected_resource_metadata(
     config: &State<Option<OAuthConfig>>,
 ) -> Result<Json<Value>, Status> {
     let config = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
-    let scopes: Vec<&str> = match config.provider {
-        Provider::GitHub => vec!["read:user"],
-    };
     Ok(Json(json!({
         "resource": format!("{}/mcp", config.public_base_url),
-        "authorization_servers": [config.public_base_url.clone()],
+        // Entra's OAuth 2.1 discovery advertises S256. Access tokens for the
+        // registered v2 API still identify the tenant's /v2.0 issuer.
+        "authorization_servers": [format!("{ENTRA_AUTHORITY}/{}/oauth21/2026-08", config.tenant_id)],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": scopes,
+        "scopes_supported": [config.resource_scope(), "offline_access"],
     })))
 }
 
-#[get("/.well-known/oauth-authorization-server")]
-pub fn authorization_server_metadata(
-    config: &State<Option<OAuthConfig>>,
-) -> Result<Json<Value>, Status> {
-    let config = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
-    let body = match config.provider {
-        Provider::GitHub => json!({
-            "issuer": "https://github.com",
-            "authorization_endpoint": "https://github.com/login/oauth/authorize",
-            "token_endpoint": "https://github.com/login/oauth/access_token",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["read:user"],
-        }),
-    };
-    Ok(Json(body))
-}
+#[cfg(test)]
+#[path = "oauth_tests.rs"]
+mod tests;

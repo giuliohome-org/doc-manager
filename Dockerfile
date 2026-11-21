@@ -21,8 +21,9 @@ WORKDIR /build
 COPY . .
 
 
-RUN apt-get update -y
-RUN apt-get install -y pkg-config libssl-dev
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 ## for Enterprise CAs
 ## RUN apt-get install -y ca-certificates
@@ -38,12 +39,14 @@ RUN --mount=type=cache,target=/build/target \
 
 ################################################################################
 
-FROM docker.io/debian:bookworm-slim
+FROM docker.io/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 WORKDIR /app
 
-RUN apt-get update -y
-RUN apt-get install -y pkg-config libssl-dev ca-certificates
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 ## copy the main binary
 COPY --from=build /build/main .

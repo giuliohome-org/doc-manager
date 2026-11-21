@@ -27,10 +27,9 @@ Claude conversation.
 
 ## Talking to your docs through Claude
 
-The same Rust process exposes a Streamable-HTTP [Model Context Protocol]
-(https://modelcontextprotocol.io) server at `/mcp`, gated by an OAuth 2.1
-flow against an upstream identity provider (currently **GitHub** —
-Auth0 reserved for a future round, the code is provider-shaped).
+The same Rust process exposes a Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io)
+server at `/mcp`. It accepts Microsoft Entra v2 delegated access tokens issued
+for the Doc Manager API, the registered connector client and an allowed user.
 Encrypted documents stay private (their content is never returned to
 Claude); plaintext documents become first-class citizens in the chat.
 
@@ -53,41 +52,34 @@ discover them by title, but their contents and writes are refused server-side.
 That keeps the zero-knowledge guarantee intact: encrypted = "private to me",
 plaintext = "shareable with Claude".
 
-### Add it to Claude
+### Connect ChatGPT or Claude
 
-Claude.ai's custom-connector advanced settings accept an OAuth
-**Client ID + Client Secret** ([only those two
-fields](https://github.com/anthropics/claude-ai-mcp/issues/112)),
-so Claude.ai runs the full OAuth 2.1 + PKCE flow itself and our server
-only needs to (a) advertise the IdP via well-known metadata and (b)
-validate the resulting bearer.
+1. In your Entra tenant, register a single-tenant **Doc Manager API** and set
+   `api.requestedAccessTokenVersion` to `2`. Under **Expose an API**, set the
+   Application ID URI to the exact HTTPS MCP endpoint, for example
+   `https://doc-manager.giuliohome.com/mcp`, and expose the delegated scope
+   `mcp.access`. The tenant must allow this identifier URI.
+2. Register a separate **connector client**. Set its Web redirect URI to the
+   exact callback shown in your connector settings. Grant it the Doc Manager
+   API's delegated `mcp.access` permission and obtain consent. Enter the client
+   ID and secret in the connector's OAuth settings.
+3. Configure the server with the variables in the table below. Set
+   `OAUTH_PROVIDER=entra` and use the user's **object ID in this tenant** in
+   `OAUTH_ALLOWED_USERS`. The server only needs public IDs and Microsoft's
+   signing keys.
+4. Connect to `<origin>/mcp` and sign in. The `401` challenge links to
+   `/.well-known/oauth-protected-resource`. It requests the delegated
+   `<origin>/mcp/mcp.access` scope and `offline_access` for token renewal.
+   If Azure Easy Auth protects the website, pass these two endpoints through
+   to Rocket while retaining the existing protections for the website and REST API.
 
-1. **Register a GitHub OAuth App.** GitHub → *Settings* → *Developer
-   settings* → *OAuth Apps* → *New OAuth App*. Set:
-   - *Authorization callback URL*: `https://claude.ai/api/mcp/auth_callback`
-   - Copy the *Client ID* and generate a *Client Secret*.
-2. **Configure the server** (env vars on the container app):
-   ```sh
-   export OAUTH_PROVIDER=github
-   export OAUTH_PUBLIC_BASE_URL=https://doc-manager.giuliohome.com
-   export OAUTH_ALLOWED_USERS=giuliohome     # comma-separated GitHub logins
-   # optional — disables create/update tools:
-   export MCP_READ_ONLY=true
-   ```
-   `OAUTH_ALLOWED_USERS` is **required** — an empty allowlist refuses to
-   start, so a misconfiguration cannot silently let any GitHub user in.
-3. **Add the connector in Claude.ai** — Settings → Connectors → Add
-   custom connector, URL `https://doc-manager.giuliohome.com/mcp`, then
-   *Advanced settings* → paste the GitHub OAuth App's Client ID and
-   Client Secret. The first request triggers the OAuth dance: Claude.ai
-   sees the `401` + `WWW-Authenticate` from `/mcp`, fetches our
-   well-known metadata, walks you through `github.com/login/oauth/authorize`,
-   and forwards the resulting bearer on every subsequent call. The server
-   validates each request by calling `https://api.github.com/user` (5-min
-   cache, SHA-256-hashed token key).
-
-If `OAUTH_PROVIDER` is unset the endpoint replies `503 Service Unavailable`,
-so the MCP surface is fully opt-in.
+**Migrating an existing GitHub connector.** Configure a separate test connector
+with the Entra credentials and a fresh sign-in. Use a staging HTTPS endpoint
+with a matching Application ID URI and disposable storage. Verify tool listing,
+a search of the test vault and token renewal. The old `github` server setting
+causes this build to refuse startup. Apply the production MCP settings with the
+candidate image in the same new revision. A push to `main` triggers the Azure
+deployment workflow. [Microsoft's setup guide](https://learn.microsoft.com/en-us/entra/agent-id/secure-mcp-server-with-entra-id)
 
 ---
 
@@ -108,15 +100,21 @@ export AZURE_STORAGE_ACCOUNT=youraccount
 export AZURE_STORAGE_ACCESS_KEY=yourkey
 export RUST_ROCKET_EXACT_ORIGIN=http://localhost:8080
 # optional — enables the MCP endpoint:
-export OAUTH_PROVIDER=github
+export OAUTH_PROVIDER=entra
 export OAUTH_PUBLIC_BASE_URL=http://localhost:8080
-export OAUTH_ALLOWED_USERS=your-github-login
+export OAUTH_TENANT_ID='your-tenant-guid'
+export OAUTH_API_CLIENT_ID='your-api-client-guid'
+export OAUTH_CONNECTOR_CLIENT_ID='your-connector-client-guid'
+export OAUTH_ALLOWED_USERS='your-user-object-guid'
 docker run -p 8080:8080 \
   -e AZURE_STORAGE_ACCOUNT \
   -e AZURE_STORAGE_ACCESS_KEY \
   -e RUST_ROCKET_EXACT_ORIGIN \
   -e OAUTH_PROVIDER \
   -e OAUTH_PUBLIC_BASE_URL \
+  -e OAUTH_TENANT_ID \
+  -e OAUTH_API_CLIENT_ID \
+  -e OAUTH_CONNECTOR_CLIENT_ID \
   -e OAUTH_ALLOWED_USERS \
   giuliohome/doc-manager:latest
 ```
@@ -147,9 +145,12 @@ sudo ctr t start doc-manager
 | `AZURE_STORAGE_ACCOUNT`       | yes                     | Azure Storage account name (container `documents` is auto-created)                               |
 | `AZURE_STORAGE_ACCESS_KEY`    | yes                     | Storage access key                                                                               |
 | `RUST_ROCKET_EXACT_ORIGIN`    | yes                     | CORS origin for the React frontend                                                               |
-| `OAUTH_PROVIDER`              | no (enables MCP)        | `github` (Auth0 reserved for future)                                                             |
+| `OAUTH_PROVIDER`              | no (enables MCP)        | `entra` for delegated Microsoft Entra v2 access tokens                                                             |
 | `OAUTH_PUBLIC_BASE_URL`       | with `OAUTH_PROVIDER`   | Public base URL of this server, e.g. `https://doc-manager.giuliohome.com`                        |
-| `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | Comma-separated GitHub logins; **must list at least one user** — empty refuses to start          |
+| `OAUTH_TENANT_ID`             | with `OAUTH_PROVIDER`   | Entra directory (tenant) ID |
+| `OAUTH_API_CLIENT_ID`         | with `OAUTH_PROVIDER`   | API registration application ID, the expected token audience |
+| `OAUTH_CONNECTOR_CLIENT_ID`   | with `OAUTH_PROVIDER`   | Connector registration application ID, the expected authorized client |
+| `OAUTH_ALLOWED_USERS`         | with `OAUTH_PROVIDER`   | One or more comma-separated Entra user object IDs in this tenant |
 | `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |
 | `MCP_PUBLIC_INTROSPECT`       | no (auto)               | Opens `/mcp` for unauthenticated `tools/list` only (calls are 403'd) so registries like Glama can probe. Auto-on when both `AZURE_STORAGE_ACCOUNT` and `OAUTH_PROVIDER` are unset; set `0` to force-disable. |
 | `MCP_STDIO`                   | no (default false)      | When `true`/`1`/`yes` (or pass `--stdio`), runs as a stdio MCP server (newline-delimited JSON-RPC on stdin/stdout) instead of starting the HTTP listener. Used by registries that wrap servers with `mcp-proxy`. |

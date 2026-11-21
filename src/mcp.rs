@@ -1,7 +1,7 @@
 //! Model Context Protocol (Streamable HTTP) endpoint for the Doc Manager.
 //!
 //! Exposes a JSON-RPC 2.0 server at `POST /mcp`, gated by an OAuth bearer
-//! token issued by an upstream IdP (currently GitHub) and validated by
+//! token issued by Microsoft Entra for this API and validated by
 //! the [`oauth`](crate::oauth) module. An unauthenticated request gets
 //! `401 Unauthorized` with `WWW-Authenticate: Bearer realm="MCP",
 //! resource_metadata="<base>/.well-known/oauth-protected-resource"` — the
@@ -15,7 +15,7 @@
 //! returned, and writes refuse to overwrite them. By design: encrypted = "not
 //! shareable with Claude", plaintext = "shareable with Claude".
 
-use crate::oauth::{self, AuthError, OAuthConfig, OAuthState};
+use crate::oauth::{self, AuthError, OAuthConfig};
 use crate::AzureClient;
 use base64::Engine as _;
 use rocket::http::{Header, Status};
@@ -53,6 +53,8 @@ fn read_only() -> bool {
     )
 }
 
+pub struct PublicIntrospection(pub bool);
+
 pub fn public_introspect() -> bool {
     match env::var("MCP_PUBLIC_INTROSPECT").ok().as_deref() {
         Some("1") | Some("true") | Some("TRUE") | Some("yes") => true,
@@ -70,11 +72,10 @@ impl<'r> FromRequest<'r> for PresentedBearer {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let token = req
-            .headers()
-            .get_one("Authorization")
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .map(str::to_string);
+        let mut headers = req.headers().get("Authorization");
+        let token = headers.next().and_then(|h| h.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer") && headers.next().is_none())
+            .map(|(_, value)| value.to_string());
         Outcome::Success(PresentedBearer(token))
     }
 }
@@ -82,34 +83,28 @@ impl<'r> FromRequest<'r> for PresentedBearer {
 async fn authenticate(
     presented: &str,
     oauth_cfg: &State<Option<OAuthConfig>>,
-    oauth_state: &State<OAuthState>,
 ) -> Result<(), McpHttp> {
     let Some(cfg) = oauth_cfg.inner().as_ref() else {
         // OAuth not configured: MCP endpoint is effectively disabled.
         return Err(McpHttp::Status(Status::ServiceUnavailable));
     };
-    let state = oauth_state.inner();
-
     if !presented.is_empty() {
-        match oauth::validate_bearer(presented, cfg, state).await {
-            Ok(user) => {
-                println!("[mcp] auth ok: user={}", user.login);
-                return Ok(());
+        match cfg.validate_bearer(presented).await {
+            Ok(()) => return Ok(()),
+            Err(AuthError::Forbidden) => return Err(McpHttp::Status(Status::Forbidden)),
+            Err(AuthError::InsufficientScope) => return Err(McpHttp::Challenge {
+                status: Status::Forbidden,
+                header: format!(r#"{}, error="insufficient_scope""#, oauth::www_authenticate_header(cfg)),
+            }),
+            Err(AuthError::KeyServiceUnavailable) => {
+                return Err(McpHttp::Status(Status::ServiceUnavailable));
             }
-            Err(AuthError::Forbidden(msg)) => {
-                eprintln!("[mcp] auth forbidden: {msg}");
-                return Err(McpHttp::Status(Status::Forbidden));
-            }
-            Err(AuthError::Unauthorized(msg)) => {
-                eprintln!("[mcp] auth unauthorized: {msg}");
-            }
-            Err(AuthError::Upstream(msg)) => {
-                eprintln!("[mcp] auth upstream error: {msg}");
-            }
+            Err(AuthError::Unauthorized) => (),
         }
     }
-    Err(McpHttp::Unauthorized {
-        www_authenticate: Some(oauth::www_authenticate_header(cfg)),
+    Err(McpHttp::Challenge {
+        status: Status::Unauthorized,
+        header: oauth::www_authenticate_header(cfg),
     })
 }
 
@@ -148,14 +143,14 @@ impl McpError {
 // ---------- Custom responder ----------
 //
 // `Body` is the JSON-RPC success body, `Accepted` is the 202 we use for
-// notifications, `Unauthorized` carries an optional `WWW-Authenticate`
-// header (set when OAuth is configured), and `Status` is a thin escape
+// notifications, `Challenge` carries an OAuth `WWW-Authenticate`
+// header, and `Status` is a thin escape
 // hatch for raw status codes (403, 405, 503).
 
 pub enum McpHttp {
     Body(Value),
     Accepted,
-    Unauthorized { www_authenticate: Option<String> },
+    Challenge { status: Status, header: String },
     Status(Status),
 }
 
@@ -164,14 +159,10 @@ impl<'r> Responder<'r, 'static> for McpHttp {
         match self {
             McpHttp::Body(v) => Json(v).respond_to(req),
             McpHttp::Accepted => Response::build().status(Status::Accepted).ok(),
-            McpHttp::Unauthorized { www_authenticate } => {
-                let mut r = Response::build();
-                r.status(Status::Unauthorized);
-                if let Some(value) = www_authenticate {
-                    r.header(Header::new("WWW-Authenticate", value));
-                }
-                r.ok()
-            }
+            McpHttp::Challenge { status, header } => Response::build()
+                .status(status)
+                .header(Header::new("WWW-Authenticate", header))
+                .ok(),
             McpHttp::Status(s) => Response::build().status(s).ok(),
         }
     }
@@ -183,11 +174,11 @@ impl<'r> Responder<'r, 'static> for McpHttp {
 pub async fn mcp_get(
     bearer: PresentedBearer,
     oauth_cfg: &State<Option<OAuthConfig>>,
-    oauth_state: &State<OAuthState>,
+    introspection: &State<PublicIntrospection>,
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
-    if !public_introspect() {
-        if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+    if !introspection.0 {
+        if let Err(resp) = authenticate(token, oauth_cfg).await {
             return resp;
         }
     }
@@ -199,23 +190,23 @@ pub async fn mcp_get(
 pub async fn mcp_post(
     bearer: PresentedBearer,
     oauth_cfg: &State<Option<OAuthConfig>>,
-    oauth_state: &State<OAuthState>,
+    introspection: &State<PublicIntrospection>,
     req: Json<JsonRpcRequest>,
     client: &State<AzureClient>,
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
-    if !public_introspect() {
-        if let Err(resp) = authenticate(token, oauth_cfg, oauth_state).await {
+    if !introspection.0 {
+        if let Err(resp) = authenticate(token, oauth_cfg).await {
             return resp;
         }
     }
-    handle(req.into_inner(), client.inner()).await
+    handle(req.into_inner(), client.inner(), introspection.0).await
 }
 
-async fn handle(req: JsonRpcRequest, client: &AzureClient) -> McpHttp {
+async fn handle(req: JsonRpcRequest, client: &AzureClient, introspection: bool) -> McpHttp {
     let id = req.id;
     let is_notification = id.is_none();
-    let result = dispatch(&req.method, req.params, client).await;
+    let result = dispatch(&req.method, req.params, client, introspection).await;
     if is_notification {
         return McpHttp::Accepted;
     }
@@ -234,13 +225,14 @@ async fn dispatch(
     method: &str,
     params: Option<Value>,
     client: &AzureClient,
+    introspection: bool,
 ) -> Result<Value, McpError> {
     match method {
         "initialize" => Ok(initialize_result()),
         "notifications/initialized" | "notifications/cancelled" => Ok(Value::Null),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list()),
-        "tools/call" if public_introspect() => Err(McpError::forbidden(
+        "tools/call" if introspection => Err(McpError::forbidden(
             "Server is in public introspection mode. No document operations are available.",
         )),
         "tools/call" => tools_call(params, client).await,
@@ -952,7 +944,7 @@ pub async fn run_stdio(client: &AzureClient) -> std::io::Result<()> {
 
         let id = req.id.clone();
         let is_notification = id.is_none();
-        let result = dispatch(&req.method, req.params, client).await;
+        let result = dispatch(&req.method, req.params, client, public_introspect()).await;
         if is_notification {
             continue;
         }

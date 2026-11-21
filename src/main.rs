@@ -554,7 +554,7 @@ async fn rocket() -> _ {
         }
     };
     match &oauth_config {
-        Some(cfg) => {
+        Some(_) => {
             let mode = if env::var("MCP_READ_ONLY").ok().as_deref()
                 .map(|v| matches!(v, "1" | "true" | "TRUE" | "yes"))
                 .unwrap_or(false)
@@ -563,23 +563,19 @@ async fn rocket() -> _ {
             } else {
                 "full CRUD"
             };
-            println!(
-                "MCP endpoint enabled at /mcp ({mode}): provider={}, allowlist={:?}",
-                cfg.provider.as_str(),
-                cfg.allowed_users
-            );
+            println!("MCP endpoint enabled at /mcp ({mode}) with Entra authentication.");
         }
         None if public_introspect => {
             println!("MCP endpoint at /mcp: public introspection mode (no OAuth, no document access).");
         }
-        None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=github to enable)."),
+        None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=entra to enable)."),
     }
 
     let has_oauth = oauth_config.is_some();
     let mut server = rocket::build()
         .manage(azure_client)
         .manage(oauth_config)
-        .manage(oauth::OAuthState::default())
+        .manage(mcp::PublicIntrospection(public_introspect))
         .attach(cors)
         // Serve React static files
         .mount("/", FileServer::from("./frontend/dist"))
@@ -611,10 +607,7 @@ async fn rocket() -> _ {
     if has_oauth {
         server = server.mount(
             "/",
-            routes![
-                oauth::protected_resource_metadata,
-                oauth::authorization_server_metadata,
-            ],
+            routes![oauth::protected_resource_metadata],
         );
     }
 
