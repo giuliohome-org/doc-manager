@@ -13,6 +13,7 @@ const BASE: &str = "https://docs.example.test";
 const MCP: &str = "https://docs.example.test/mcp";
 const CLIENT: &str = "ExampleClient";
 const REDIRECT: &str = "https://chat.example.test/connector/oauth/test";
+const SECOND_REDIRECT: &str = "https://chat.example.test/connector/oauth/second";
 const SECRET: &str = "local-test-secret";
 const USER: u64 = 42;
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -20,7 +21,15 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const STATE: &str = "state.bound-to-the-connector";
 
 fn config(base: &str, client: &str) -> OAuthConfig {
-    OAuthConfig::new(base, client, REDIRECT, "42", &STANDARD.encode([0x11; 32])).unwrap()
+    OAuthConfig::new(
+        base,
+        client,
+        REDIRECT,
+        None,
+        "42",
+        &STANDARD.encode([0x11; 32]),
+    )
+    .unwrap()
 }
 
 async fn app(config: OAuthConfig) -> RocketClient {
@@ -59,7 +68,11 @@ fn params(url: &Url) -> HashMap<String, String> {
     url.query_pairs().into_owned().collect()
 }
 
-async fn authorize<'a>(client: &'a RocketClient, resource: &str) -> LocalResponse<'a> {
+async fn authorize<'a>(
+    client: &'a RocketClient,
+    resource: &str,
+    redirect: &str,
+) -> LocalResponse<'a> {
     client
         .get(format!(
             "/mcp/oauth/authorize?{}",
@@ -67,7 +80,7 @@ async fn authorize<'a>(client: &'a RocketClient, resource: &str) -> LocalRespons
                 ("client_id", CLIENT),
                 ("response_type", "code"),
                 ("resource", resource),
-                ("redirect_uri", REDIRECT),
+                ("redirect_uri", redirect),
                 ("scope", "mcp.access offline_access"),
                 ("state", STATE),
                 ("code_challenge_method", "S256"),
@@ -252,7 +265,7 @@ async fn mcp_rejects_invalid_audience_client_purpose_lifetime_user_and_scope() {
 #[rocket::async_test]
 async fn cancelled_login_preserves_state_and_requires_the_initiating_browser() {
     let client = app(config(BASE, CLIENT)).await;
-    let start = authorize(&client, MCP).await;
+    let start = authorize(&client, MCP, REDIRECT).await;
     let state = params(&redirect(&start))["state"].clone();
     let cookie = start.cookies().iter().next().unwrap().clone().into_owned();
     let callback = format!(
@@ -323,18 +336,48 @@ async fn mock_github(listener: TcpListener, upstream_challenge: String) {
 
 #[rocket::async_test]
 async fn connector_completes_github_pkce_exchange_and_refresh_and_calls_mcp() {
-    let mut cfg = config(BASE, CLIENT);
+    complete_connector_flow(REDIRECT, SECOND_REDIRECT).await;
+}
+
+#[rocket::async_test]
+async fn second_connector_completes_its_own_bound_flow() {
+    complete_connector_flow(SECOND_REDIRECT, REDIRECT).await;
+}
+
+async fn complete_connector_flow(callback_uri: &str, other_callback: &str) {
+    let mut cfg = OAuthConfig::new(
+        BASE,
+        CLIENT,
+        REDIRECT,
+        Some(SECOND_REDIRECT),
+        "42",
+        &STANDARD.encode([0x11; 32]),
+    )
+    .unwrap();
+    let original = config(BASE, CLIENT);
+    assert!(cfg
+        .validate_bearer(&original.issue_access(USER).unwrap())
+        .is_ok());
+    let old_refresh = original.seal("refresh", &"old grant", 600).unwrap();
+    assert_eq!(
+        cfg.open::<String>("refresh", &old_refresh).unwrap(),
+        "old grant"
+    );
+    let primary_only = app(original).await;
     let server = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let github = format!("http://{}", server.local_addr().unwrap());
     cfg.github_authorize = format!("{github}/authorize");
     cfg.github_token = format!("{github}/token");
     cfg.github_user = format!("{github}/user");
     let client = app(cfg).await;
-    let wrong = authorize(&client, "https://other.example.test/mcp").await;
+    let unregistered = authorize(&client, MCP, &format!("{callback_uri}/extra")).await;
+    assert_eq!(unregistered.status(), Status::BadRequest);
+    assert!(unregistered.headers().get_one("Location").is_none());
+    let wrong = authorize(&client, "https://other.example.test/mcp", callback_uri).await;
     let rejected = redirect(&wrong);
-    assert_eq!(rejected.as_str().split('?').next().unwrap(), REDIRECT);
+    assert_eq!(rejected.as_str().split('?').next().unwrap(), callback_uri);
     assert_eq!(params(&rejected)["error"], "invalid_target");
-    let start = authorize(&client, MCP).await;
+    let start = authorize(&client, MCP, callback_uri).await;
     let destination = redirect(&start);
     assert_eq!(
         destination.as_str().split('?').next().unwrap(),
@@ -351,16 +394,26 @@ async fn connector_completes_github_pkce_exchange_and_refresh_and_calls_mcp() {
     assert_ne!(upstream["code_challenge"], CHALLENGE);
     assert_ne!(upstream["state"], STATE);
     let cookie: Cookie<'_> = start.cookies().iter().next().unwrap().clone();
+    let callback_path = format!(
+        "/mcp/oauth/callback?{}",
+        fields(&[("state", &upstream["state"]), ("code", "github-code")])
+    );
+    if callback_uri == SECOND_REDIRECT {
+        let removed = primary_only
+            .get(&callback_path)
+            .cookie(cookie.clone().into_owned())
+            .dispatch()
+            .await;
+        assert_eq!(removed.status(), Status::BadRequest);
+        assert!(removed.headers().get_one("Location").is_none());
+    }
     let callback = client
-        .get(format!(
-            "/mcp/oauth/callback?{}",
-            fields(&[("state", &upstream["state"]), ("code", "github-code")])
-        ))
+        .get(&callback_path)
         .cookie(cookie.into_owned())
         .dispatch()
         .await;
     let returned = redirect(&callback);
-    assert_eq!(returned.as_str().split('?').next().unwrap(), REDIRECT);
+    assert_eq!(returned.as_str().split('?').next().unwrap(), callback_uri);
     let downstream = params(&returned);
     assert_eq!(downstream["state"], STATE);
     assert_eq!(downstream["iss"], BASE);
@@ -369,27 +422,47 @@ async fn connector_completes_github_pkce_exchange_and_refresh_and_calls_mcp() {
 
     let github_calls =
         rocket::tokio::spawn(mock_github(server, upstream["code_challenge"].clone()));
-    let code_params = |resource, verifier| {
+    let code_params = |resource, verifier, redirect| {
         [
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", REDIRECT),
+            ("redirect_uri", redirect),
             ("code_verifier", verifier),
             ("resource", resource),
         ]
     };
-    for (resource, verifier, expected_error) in [
-        ("https://other.example.test/mcp", VERIFIER, "invalid_target"),
-        (MCP, "invalid-verifier", "invalid_grant"),
+    for (resource, verifier, redirect, expected_error) in [
+        (
+            "https://other.example.test/mcp",
+            VERIFIER,
+            callback_uri,
+            "invalid_target",
+        ),
+        (MCP, "invalid-verifier", callback_uri, "invalid_grant"),
+        (MCP, VERIFIER, other_callback, "invalid_grant"),
     ] {
-        let denied = token_post(&client, &code_params(resource, verifier), false).await;
+        let denied = token_post(&client, &code_params(resource, verifier, redirect), false).await;
         assert_eq!(denied.status(), Status::BadRequest);
         assert_eq!(
             denied.into_json::<Value>().await.unwrap()["error"],
             expected_error
         );
     }
-    let granted = token_post(&client, &code_params(MCP, VERIFIER), true).await;
+    if callback_uri == SECOND_REDIRECT {
+        let removed = token_post(
+            &primary_only,
+            &code_params(MCP, VERIFIER, callback_uri),
+            true,
+        )
+        .await;
+        assert_eq!(
+            removed.into_json::<Value>().await.unwrap()["error"],
+            "invalid_grant"
+        );
+    }
+    let mut sdk_form = code_params(MCP, VERIFIER, callback_uri).to_vec();
+    sdk_form.push(("client_id", CLIENT));
+    let granted = token_post(&client, &sdk_form, true).await;
     assert_eq!(granted.status(), Status::Ok);
     assert_eq!(granted.headers().get_one("Cache-Control"), Some("no-store"));
     let tokens = granted.into_json::<Value>().await.unwrap();

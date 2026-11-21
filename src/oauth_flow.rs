@@ -1,4 +1,4 @@
-use super::OAuthConfig;
+use super::{OAuthConfig, RegisteredRedirect};
 use aws_lc_rs::{
     digest,
     rand::{SecureRandom, SystemRandom},
@@ -103,8 +103,14 @@ fn scope_request(scope: Option<&str>) -> Option<bool> {
     has_access.then_some(offline)
 }
 
-fn client_redirect(config: &OAuthConfig, state: &str, key: &str, value: &str) -> RedirectResult {
-    let mut redirect = Url::parse(&config.redirect_uri).map_err(|_| Status::InternalServerError)?;
+fn client_redirect(
+    config: &OAuthConfig,
+    registered: RegisteredRedirect<'_>,
+    state: &str,
+    key: &str,
+    value: &str,
+) -> RedirectResult {
+    let mut redirect = Url::parse(registered.uri).map_err(|_| Status::InternalServerError)?;
     redirect
         .query_pairs_mut()
         .append_pair(key, value)
@@ -126,17 +132,20 @@ fn start(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Red
         auth_event!("authorize.client_mismatch");
         return Err(Status::BadRequest);
     }
-    if param("redirect_uri") != Some(config.redirect_uri.as_str()) {
+    let Some(registered) = config
+        .redirects()
+        .find(|r| param("redirect_uri") == Some(r.uri))
+    else {
         auth_event!("authorize.redirect_mismatch");
         return Err(Status::BadRequest);
-    }
+    };
     let state = param("state")
         .filter(|s| {
             !s.is_empty() && s.len() <= 2048 && s.bytes().all(|b| (0x20..=0x7e).contains(&b))
         })
         .ok_or(Status::BadRequest)
         .inspect_err(|_| auth_event!("authorize.invalid_state"))?;
-    let reject = |error: &str| client_redirect(config, state, "error", error);
+    let reject = |error: &str| client_redirect(config, registered, state, "error", error);
     if param("response_type") != Some("code") {
         auth_event!("authorize.unsupported_response_type");
         return reject("unsupported_response_type");
@@ -171,7 +180,7 @@ fn start(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Red
         offline_access,
     };
     let sealed_state = config
-        .seal("state", &transaction, TRANSACTION_TTL)
+        .seal(&registered.purpose("state"), &transaction, TRANSACTION_TTL)
         .map_err(|_| Status::InternalServerError)?;
     let mut github =
         Url::parse(&config.github_authorize).map_err(|_| Status::InternalServerError)?;
@@ -225,9 +234,15 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
         .get("state")
         .ok_or(Status::BadRequest)
         .inspect_err(|_| auth_event!("callback.missing_state"))?;
-    let transaction: Transaction = config
-        .open("state", state)
-        .map_err(|_| Status::BadRequest)
+    let (registered, transaction) = config
+        .redirects()
+        .find_map(|registered| {
+            config
+                .open::<Transaction>(&registered.purpose("state"), state)
+                .ok()
+                .map(|tx| (registered, tx))
+        })
+        .ok_or(Status::BadRequest)
         .inspect_err(|_| auth_event!("callback.invalid_state"))?;
     let name = cookie_name(&transaction.upstream_verifier);
     let cookie = cookies
@@ -246,7 +261,9 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
             .same_site(SameSite::Lax)
             .build(),
     );
-    let redirect = |key: &str, value: &str| client_redirect(config, &transaction.state, key, value);
+    let redirect = |key: &str, value: &str| {
+        client_redirect(config, registered, &transaction.state, key, value)
+    };
     if let Some(&error) = p.get("error") {
         auth_event!("callback.provider_error");
         if p.contains_key("code") {
@@ -274,7 +291,7 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
     };
     // The token endpoint redeems the embedded GitHub code, which is single-use.
     let sealed = config
-        .seal("code", &grant, CODE_TTL)
+        .seal(&registered.purpose("code"), &grant, CODE_TTL)
         .map_err(|_| Status::InternalServerError)?;
     let redirect = redirect("code", &sealed)?;
     auth_event!("callback.redirect_connector");

@@ -105,7 +105,7 @@ impl Params {
 
     fn secret(&self, basic: Option<&str>, expected_id: &str) -> Result<String, TokenResponse> {
         let (client_id, secret) = if let Some(header) = basic {
-            if self.get("client_id").is_some() || self.get("client_secret").is_some() {
+            if self.get("client_secret").is_some() {
                 return Err(error("invalid_request"));
             }
             let (scheme, encoded) = header
@@ -127,7 +127,12 @@ impl Params {
                     .map(|v| v.into_owned())
                     .map_err(|_| error("invalid_client"))
             };
-            (decode(id)?, decode(password)?)
+            let id = decode(id)?;
+            // A repeated public identifier is not a second authentication method.
+            if self.get("client_id").is_some_and(|body_id| body_id != id) {
+                return Err(error("invalid_request"));
+            }
+            (id, decode(password)?)
         } else {
             (
                 self.get("client_id").unwrap_or_default().to_owned(),
@@ -188,12 +193,13 @@ async fn exchange(
     ];
     let (offline, expected_user) = match params.require("grant_type")? {
         "authorization_code" => {
-            if params.require("redirect_uri")? != config.redirect_uri {
+            let requested = params.require("redirect_uri")?;
+            let Some(registered) = config.redirects().find(|r| r.uri == requested) else {
                 auth_event!("token.redirect_mismatch");
                 return Err(error("invalid_grant"));
-            }
+            };
             let grant: Grant = config
-                .open("code", params.require("code")?)
+                .open(&registered.purpose("code"), params.require("code")?)
                 .map_err(|_| error("invalid_grant"))?;
             if !matches_challenge(params.require("code_verifier")?, &grant.challenge) {
                 auth_event!("token.pkce_mismatch");
@@ -389,6 +395,14 @@ mod tests {
             empty.secret(Some(&basic), "client").ok().as_deref(),
             Some("p:+b")
         );
+        let repeated = Params::parse("client_id=client").ok().unwrap();
+        assert_eq!(
+            repeated.secret(Some(&basic), "client").ok().as_deref(),
+            Some("p:+b")
+        );
+        let conflicting = Params::parse("client_id=another-client").ok().unwrap();
+        assert!(conflicting.secret(Some(&basic), "client").is_err());
+        assert!(repeated.secret(Some(&basic), "another-client").is_err());
         let body = Params::parse("client_id=client&client_secret=other")
             .ok()
             .unwrap();

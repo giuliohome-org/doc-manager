@@ -148,6 +148,7 @@ sudo ctr t start doc-manager
 | `OAUTH_PUBLIC_BASE_URL`       | with `OAUTH_PROVIDER`   | Public base URL of this server, e.g. `https://doc-manager.giuliohome.com`                        |
 | `OAUTH_GITHUB_CLIENT_ID`      | with `OAUTH_PROVIDER`   | Public client ID of the connector's GitHub OAuth App |
 | `OAUTH_CONNECTOR_REDIRECT_URI` | with `OAUTH_PROVIDER`  | Exact callback URL for the connector |
+| `OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI` | optional | Second exact callback for a connector sharing this GitHub OAuth client. Copy the URI displayed by that connector. |
 | `OAUTH_GITHUB_USER_IDS`       | with `OAUTH_PROVIDER`   | Comma-separated list of allowed numeric GitHub user IDs |
 | `OAUTH_TOKEN_KEY`             | with `OAUTH_PROVIDER`   | Standard base64 encoding of a shared 32-byte random encryption key |
 | `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |

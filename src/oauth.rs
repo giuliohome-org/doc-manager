@@ -12,6 +12,7 @@ use rocket::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     env,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -54,12 +55,31 @@ pub struct OAuthConfig {
     base: String,
     client_id: String,
     redirect_uri: String,
+    additional_redirect_uri: Option<String>,
     allowed_ids: Vec<u64>,
     key: RandomizedNonceKey,
     github_authorize: String,
     github_token: String,
     github_user: String,
     http: Client,
+}
+
+#[derive(Clone, Copy)]
+struct RegisteredRedirect<'a> {
+    uri: &'a str,
+    primary: bool,
+}
+
+impl RegisteredRedirect<'_> {
+    // Existing grants use the original AEAD context, which already contains the
+    // primary URI. Alternate grants also authenticate their exact callback URI.
+    fn purpose<'a>(self, purpose: &'a str) -> Cow<'a, str> {
+        if self.primary {
+            Cow::Borrowed(purpose)
+        } else {
+            Cow::Owned(format!("{purpose}\0{}", self.uri))
+        }
+    }
 }
 
 fn web_url(value: &str) -> Result<Url, String> {
@@ -86,10 +106,16 @@ impl OAuthConfig {
         }
         let required =
             |name| env::var(name).map_err(|_| format!("{name} is required for MCP OAuth"));
+        let additional = match env::var("OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI") {
+            Ok(uri) => Some(uri),
+            Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("invalid OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI".into()),
+        };
         Self::new(
             &required("OAUTH_PUBLIC_BASE_URL")?,
             &required("OAUTH_GITHUB_CLIENT_ID")?,
             &required("OAUTH_CONNECTOR_REDIRECT_URI")?,
+            additional.as_deref(),
             &required("OAUTH_GITHUB_USER_IDS")?,
             &required("OAUTH_TOKEN_KEY")?,
         )
@@ -100,6 +126,7 @@ impl OAuthConfig {
         base: &str,
         client: &str,
         redirect: &str,
+        additional: Option<&str>,
         users: &str,
         key: &str,
     ) -> Result<Self, String> {
@@ -107,7 +134,13 @@ impl OAuthConfig {
         if base.path() != "/" {
             return Err("OAUTH_PUBLIC_BASE_URL must be an origin".into());
         }
-        web_url(redirect)?;
+        let additional = additional.filter(|uri| !uri.is_empty() && *uri != redirect);
+        for uri in std::iter::once(redirect).chain(additional) {
+            web_url(uri)?;
+            if uri.contains('*') {
+                return Err("OAuth redirect URIs must be exact".into());
+            }
+        }
         if client.is_empty()
             || client.len() > 128
             || !client.bytes().all(|x| x.is_ascii_alphanumeric())
@@ -139,6 +172,7 @@ impl OAuthConfig {
             base: base.origin().ascii_serialization(),
             client_id: client.into(),
             redirect_uri: redirect.into(),
+            additional_redirect_uri: additional.map(str::to_owned),
             allowed_ids,
             key,
             http,
@@ -150,6 +184,21 @@ impl OAuthConfig {
 
     fn resource(&self) -> String {
         format!("{}/mcp", self.base)
+    }
+
+    fn redirects(&self) -> impl Iterator<Item = RegisteredRedirect<'_>> {
+        std::iter::once(RegisteredRedirect {
+            uri: &self.redirect_uri,
+            primary: true,
+        })
+        .chain(
+            self.additional_redirect_uri
+                .as_deref()
+                .map(|uri| RegisteredRedirect {
+                    uri,
+                    primary: false,
+                }),
+        )
     }
 
     // Authenticating the configuration as AAD binds every grant to its issuer, exact audience,
