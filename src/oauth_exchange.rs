@@ -52,6 +52,15 @@ impl<'r> Responder<'r, 'static> for TokenResponse {
 }
 
 fn error(name: &str) -> TokenResponse {
+    match name {
+        "invalid_client" => auth_event!("token.invalid_client"),
+        "invalid_grant" => auth_event!("token.invalid_grant"),
+        "invalid_request" => auth_event!("token.invalid_request"),
+        "invalid_scope" => auth_event!("token.invalid_scope"),
+        "temporarily_unavailable" => auth_event!("token.unavailable"),
+        "server_error" => auth_event!("token.server_error"),
+        _ => (),
+    }
     let status = match name {
         "invalid_client" => Status::Unauthorized,
         "temporarily_unavailable" => Status::ServiceUnavailable,
@@ -166,6 +175,11 @@ async fn exchange(
 ) -> Result<TokenResponse, TokenResponse> {
     let secret = params.secret(basic, &config.client_id)?;
     if params.get("resource") != Some(&config.resource()) {
+        if params.get("resource").is_some() {
+            auth_event!("token.wrong_resource");
+        } else {
+            auth_event!("token.missing_resource");
+        }
         return Err(error("invalid_target"));
     }
     let mut upstream = vec![
@@ -175,12 +189,14 @@ async fn exchange(
     let (offline, expected_user) = match params.require("grant_type")? {
         "authorization_code" => {
             if params.require("redirect_uri")? != config.redirect_uri {
+                auth_event!("token.redirect_mismatch");
                 return Err(error("invalid_grant"));
             }
             let grant: Grant = config
                 .open("code", params.require("code")?)
                 .map_err(|_| error("invalid_grant"))?;
             if !matches_challenge(params.require("code_verifier")?, &grant.challenge) {
+                auth_event!("token.pkce_mismatch");
                 return Err(error("invalid_grant"));
             }
             upstream.extend([
@@ -198,6 +214,7 @@ async fn exchange(
                 .open("refresh", params.require("refresh_token")?)
                 .map_err(|_| error("invalid_grant"))?;
             if !config.allowed_ids.contains(&grant.user) {
+                auth_event!("token.refresh_identity_rejected");
                 return Err(error("invalid_grant"));
             }
             let mut offline = true;
@@ -275,6 +292,7 @@ async fn exchange(
         .await
         .map_err(|_| error("temporarily_unavailable"))?;
     if !config.allowed_ids.contains(&user.id) || expected_user.is_some_and(|id| id != user.id) {
+        auth_event!("token.identity_rejected");
         return Err(error("invalid_grant"));
     }
 
@@ -305,6 +323,11 @@ async fn exchange(
             }
         }
     }
+    if result.get("refresh_token").is_some() {
+        auth_event!("token.issued_with_refresh");
+    } else {
+        auth_event!("token.issued_access_only");
+    }
     Ok(TokenResponse(Status::Ok, result))
 }
 
@@ -314,6 +337,7 @@ pub async fn token(
     headers: TokenHeaders<'_>,
     data: Data<'_>,
 ) -> TokenResponse {
+    auth_event!("token.received");
     let Some(config) = config.inner().as_ref() else {
         return error("temporarily_unavailable");
     };
@@ -328,6 +352,11 @@ pub async fn token(
         Ok(params) => params,
         Err(response) => return response,
     };
+    match params.get("grant_type") {
+        Some("authorization_code") => auth_event!("token.authorization_code"),
+        Some("refresh_token") => auth_event!("token.refresh"),
+        _ => auth_event!("token.unknown_grant_type"),
+    }
     exchange(config, params, headers.basic)
         .await
         .unwrap_or_else(|response| response)

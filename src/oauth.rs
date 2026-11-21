@@ -13,8 +13,34 @@ use rocket::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+// Only compile-time event names can be logged. Each call site emits at most once
+// per 30 seconds per replica, including when several requests arrive together.
+macro_rules! auth_event {
+    ($label:literal) => {{
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if $crate::oauth::sample_event(&NEXT) {
+            println!("{}", concat!("doc_manager_oauth ", $label));
+        }
+    }};
+}
+pub(crate) use auth_event;
+
+pub(crate) fn sample_event(next: &AtomicU64) -> bool {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let seconds = START.get_or_init(Instant::now).elapsed().as_secs();
+    let previous = next.load(Ordering::Relaxed);
+    seconds >= previous
+        && next
+            .compare_exchange(previous, seconds + 30, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+}
 
 #[path = "oauth_exchange.rs"]
 pub(crate) mod exchange;
@@ -226,7 +252,7 @@ pub enum AuthError {
 
 pub fn www_authenticate_header(config: &OAuthConfig) -> String {
     format!(
-        r#"Bearer realm="Doc Manager", resource_metadata="{}/.well-known/oauth-protected-resource", scope="mcp.access offline_access""#,
+        r#"Bearer realm="Doc Manager", resource_metadata="{}/.well-known/oauth-protected-resource/mcp", scope="mcp.access offline_access""#,
         config.base
     )
 }
@@ -236,6 +262,7 @@ pub fn protected_resource_metadata(
     config: &State<Option<OAuthConfig>>,
 ) -> Result<Json<Value>, Status> {
     let c = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
+    auth_event!("discovery.resource");
     Ok(Json(
         json!({"resource":c.resource(), "resource_name":"Doc Manager",
         "authorization_servers":[c.base], "bearer_methods_supported":["header"],
@@ -243,11 +270,17 @@ pub fn protected_resource_metadata(
     ))
 }
 
+#[get("/.well-known/oauth-protected-resource/mcp")]
+pub fn mcp_resource_metadata(config: &State<Option<OAuthConfig>>) -> Result<Json<Value>, Status> {
+    protected_resource_metadata(config)
+}
+
 #[get("/.well-known/oauth-authorization-server")]
 pub fn authorization_server_metadata(
     config: &State<Option<OAuthConfig>>,
 ) -> Result<Json<Value>, Status> {
     let c = config.inner().as_ref().ok_or(Status::ServiceUnavailable)?;
+    auth_event!("discovery.issuer");
     Ok(Json(
         json!({"issuer":c.base, "authorization_endpoint":format!("{}/mcp/oauth/authorize",c.base),
         "token_endpoint":format!("{}/mcp/oauth/token",c.base), "response_types_supported":["code"],

@@ -120,32 +120,45 @@ fn cookie_name(upstream_verifier: &str) -> String {
 }
 
 fn start(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> RedirectResult {
-    let p = parameters(uri)?;
+    let p = parameters(uri).inspect_err(|_| auth_event!("authorize.invalid_query"))?;
     let param = |key: &str| p.get(key).copied();
-    if param("client_id") != Some(config.client_id.as_str())
-        || param("redirect_uri") != Some(config.redirect_uri.as_str())
-    {
+    if param("client_id") != Some(config.client_id.as_str()) {
+        auth_event!("authorize.client_mismatch");
+        return Err(Status::BadRequest);
+    }
+    if param("redirect_uri") != Some(config.redirect_uri.as_str()) {
+        auth_event!("authorize.redirect_mismatch");
         return Err(Status::BadRequest);
     }
     let state = param("state")
         .filter(|s| {
             !s.is_empty() && s.len() <= 2048 && s.bytes().all(|b| (0x20..=0x7e).contains(&b))
         })
-        .ok_or(Status::BadRequest)?;
+        .ok_or(Status::BadRequest)
+        .inspect_err(|_| auth_event!("authorize.invalid_state"))?;
     let reject = |error: &str| client_redirect(config, state, "error", error);
     if param("response_type") != Some("code") {
+        auth_event!("authorize.unsupported_response_type");
         return reject("unsupported_response_type");
     }
     if param("resource") != Some(&config.resource()) {
+        if param("resource").is_some() {
+            auth_event!("authorize.wrong_resource");
+        } else {
+            auth_event!("authorize.missing_resource");
+        }
         return reject("invalid_target");
     }
     let Some(challenge) = param("code_challenge").filter(|s| valid_challenge(s)) else {
+        auth_event!("authorize.invalid_challenge");
         return reject("invalid_request");
     };
     if param("code_challenge_method") != Some("S256") {
+        auth_event!("authorize.invalid_challenge_method");
         return reject("invalid_request");
     }
     let Some(offline_access) = scope_request(param("scope")) else {
+        auth_event!("authorize.invalid_scope");
         return reject("invalid_scope");
     };
 
@@ -187,6 +200,7 @@ fn start(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Red
             .max_age(rocket::time::Duration::seconds(TRANSACTION_TTL as i64))
             .build(),
     );
+    auth_event!("authorize.redirect_github");
     Ok(github)
 }
 
@@ -206,14 +220,22 @@ pub(crate) fn authorize(
 }
 
 fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> RedirectResult {
-    let p = parameters(uri)?;
-    let state = p.get("state").ok_or(Status::BadRequest)?;
+    let p = parameters(uri).inspect_err(|_| auth_event!("callback.invalid_query"))?;
+    let state = p
+        .get("state")
+        .ok_or(Status::BadRequest)
+        .inspect_err(|_| auth_event!("callback.missing_state"))?;
     let transaction: Transaction = config
         .open("state", state)
-        .map_err(|_| Status::BadRequest)?;
+        .map_err(|_| Status::BadRequest)
+        .inspect_err(|_| auth_event!("callback.invalid_state"))?;
     let name = cookie_name(&transaction.upstream_verifier);
-    let cookie = cookies.get(&name).ok_or(Status::BadRequest)?;
+    let cookie = cookies
+        .get(&name)
+        .ok_or(Status::BadRequest)
+        .inspect_err(|_| auth_event!("callback.missing_cookie"))?;
     if cookie.value().len() != 43 || s256(cookie.value()) != transaction.cookie_digest {
+        auth_event!("callback.invalid_cookie");
         return Err(Status::BadRequest);
     }
     cookies.remove(
@@ -226,6 +248,7 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
     );
     let redirect = |key: &str, value: &str| client_redirect(config, &transaction.state, key, value);
     if let Some(&error) = p.get("error") {
+        auth_event!("callback.provider_error");
         if p.contains_key("code") {
             return Err(Status::BadRequest);
         }
@@ -241,7 +264,8 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
     let code = p
         .get("code")
         .filter(|v| !v.is_empty() && v.len() <= 1024)
-        .ok_or(Status::BadRequest)?;
+        .ok_or(Status::BadRequest)
+        .inspect_err(|_| auth_event!("callback.invalid_code"))?;
     let grant = Grant {
         upstream_code: (*code).to_owned(),
         upstream_verifier: transaction.upstream_verifier,
@@ -252,7 +276,9 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
     let sealed = config
         .seal("code", &grant, CODE_TTL)
         .map_err(|_| Status::InternalServerError)?;
-    redirect("code", &sealed)
+    let redirect = redirect("code", &sealed)?;
+    auth_event!("callback.redirect_connector");
+    Ok(redirect)
 }
 
 #[get("/mcp/oauth/callback")]

@@ -35,6 +35,7 @@ async fn app(config: OAuthConfig) -> RocketClient {
                 "/",
                 routes![
                     protected_resource_metadata,
+                    mcp_resource_metadata,
                     authorization_server_metadata,
                     flow::authorize,
                     flow::callback,
@@ -134,7 +135,7 @@ async fn discovers_resource_and_its_authorization_server() {
     assert_eq!(res.status(), Status::Unauthorized);
     let challenge = res.headers().get_one("WWW-Authenticate").unwrap();
     assert!(challenge.contains(&format!(
-        r#"resource_metadata="{BASE}/.well-known/oauth-protected-resource""#
+        r#"resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp""#
     )));
     let resource = client
         .get("/.well-known/oauth-protected-resource")
@@ -144,6 +145,14 @@ async fn discovers_resource_and_its_authorization_server() {
         .await
         .unwrap();
     assert_eq!(resource["resource"], MCP);
+    let specific = client
+        .get("/.well-known/oauth-protected-resource/mcp")
+        .dispatch()
+        .await
+        .into_json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(specific, resource);
     assert_eq!(resource["authorization_servers"], json!([BASE]));
     assert_eq!(
         resource["scopes_supported"],
@@ -221,11 +230,22 @@ async fn mcp_rejects_invalid_audience_client_purpose_lifetime_user_and_scope() {
         ),
     ];
     let client = app(cfg).await;
+    let missing = client.get("/mcp").dispatch().await;
+    assert!(!missing
+        .headers()
+        .get_one("WWW-Authenticate")
+        .unwrap()
+        .contains("error="));
     for (token, status) in credentials {
-        assert_eq!(
-            rpc(&client, &token, "tools/list", json!({})).await.status(),
-            status
-        );
+        let response = rpc(&client, &token, "tools/list", json!({})).await;
+        assert_eq!(response.status(), status);
+        if status == Status::Unauthorized {
+            assert!(response
+                .headers()
+                .get_one("WWW-Authenticate")
+                .unwrap()
+                .contains(r#"error="invalid_token""#));
+        }
     }
 }
 

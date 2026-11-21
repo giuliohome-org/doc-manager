@@ -90,14 +90,31 @@ fn authenticate(
     };
     if !presented.is_empty() {
         match cfg.validate_bearer(presented) {
-            Ok(()) => return Ok(()),
-            Err(AuthError::Forbidden) => return Err(McpHttp::Status(Status::Forbidden)),
-            Err(AuthError::InsufficientScope) => return Err(McpHttp::Challenge {
-                status: Status::Forbidden,
-                header: format!(r#"{}, error="insufficient_scope""#, oauth::www_authenticate_header(cfg)),
-            }),
-            Err(AuthError::Unauthorized) => (),
+            Ok(()) => {
+                oauth::auth_event!("mcp.accepted");
+                return Ok(());
+            }
+            Err(AuthError::Forbidden) => {
+                oauth::auth_event!("mcp.forbidden");
+                return Err(McpHttp::Status(Status::Forbidden));
+            }
+            Err(AuthError::InsufficientScope) => {
+                oauth::auth_event!("mcp.insufficient_scope");
+                return Err(McpHttp::Challenge {
+                    status: Status::Forbidden,
+                    header: format!(r#"{}, error="insufficient_scope""#, oauth::www_authenticate_header(cfg)),
+                });
+            }
+            Err(AuthError::Unauthorized) => {
+                oauth::auth_event!("mcp.unrecognized_bearer");
+                return Err(McpHttp::Challenge {
+                    status: Status::Unauthorized,
+                    header: format!(r#"{}, error="invalid_token""#, oauth::www_authenticate_header(cfg)),
+                });
+            }
         }
+    } else {
+        oauth::auth_event!("mcp.no_bearer");
     }
     Err(McpHttp::Challenge {
         status: Status::Unauthorized,

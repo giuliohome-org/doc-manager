@@ -607,7 +607,7 @@ async fn rocket() -> _ {
     if has_oauth {
         server = server.mount(
             "/",
-            routes![oauth::protected_resource_metadata, oauth::authorization_server_metadata,
+            routes![oauth::protected_resource_metadata, oauth::mcp_resource_metadata, oauth::authorization_server_metadata,
                 oauth::flow::authorize, oauth::flow::callback, oauth::exchange::token],
         );
     }
