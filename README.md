@@ -71,8 +71,10 @@ plaintext = "shareable with Claude".
    `mcp.access` and can request `offline_access` for renewal.
 5. If Azure Easy Auth protects the website, pass `/mcp`, `/mcp/*`,
    `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-protected-resource`
-   and `/.well-known/oauth-authorization-server`
-   through to Rocket.
+   and `/.well-known/oauth-authorization-server` through to Rocket.
+   Also pass the exact `/.well-known/openid-configuration` path through.
+   Clients probing OpenID discovery receive a public 404 and can use the
+   published OAuth authorization server metadata.
 
 A push to `main` triggers the Azure deployment workflow. Configure the secret
 reference and OAuth environment variables on the candidate revision before
