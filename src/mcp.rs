@@ -1,7 +1,7 @@
 //! Model Context Protocol (Streamable HTTP) endpoint for the Doc Manager.
 //!
 //! Exposes a JSON-RPC 2.0 server at `POST /mcp`, gated by an OAuth bearer
-//! token issued by Microsoft Entra for this API and validated by
+//! token issued by Doc Manager after GitHub sign-in and validated by
 //! the [`oauth`](crate::oauth) module. An unauthenticated request gets
 //! `401 Unauthorized` with `WWW-Authenticate: Bearer realm="MCP",
 //! resource_metadata="<base>/.well-known/oauth-protected-resource"` — the
@@ -80,7 +80,7 @@ impl<'r> FromRequest<'r> for PresentedBearer {
     }
 }
 
-async fn authenticate(
+fn authenticate(
     presented: &str,
     oauth_cfg: &State<Option<OAuthConfig>>,
 ) -> Result<(), McpHttp> {
@@ -89,16 +89,13 @@ async fn authenticate(
         return Err(McpHttp::Status(Status::ServiceUnavailable));
     };
     if !presented.is_empty() {
-        match cfg.validate_bearer(presented).await {
+        match cfg.validate_bearer(presented) {
             Ok(()) => return Ok(()),
             Err(AuthError::Forbidden) => return Err(McpHttp::Status(Status::Forbidden)),
             Err(AuthError::InsufficientScope) => return Err(McpHttp::Challenge {
                 status: Status::Forbidden,
                 header: format!(r#"{}, error="insufficient_scope""#, oauth::www_authenticate_header(cfg)),
             }),
-            Err(AuthError::KeyServiceUnavailable) => {
-                return Err(McpHttp::Status(Status::ServiceUnavailable));
-            }
             Err(AuthError::Unauthorized) => (),
         }
     }
@@ -178,7 +175,7 @@ pub async fn mcp_get(
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
     if !introspection.0 {
-        if let Err(resp) = authenticate(token, oauth_cfg).await {
+        if let Err(resp) = authenticate(token, oauth_cfg) {
             return resp;
         }
     }
@@ -196,7 +193,7 @@ pub async fn mcp_post(
 ) -> McpHttp {
     let token = bearer.0.as_deref().unwrap_or("");
     if !introspection.0 {
-        if let Err(resp) = authenticate(token, oauth_cfg).await {
+        if let Err(resp) = authenticate(token, oauth_cfg) {
             return resp;
         }
     }

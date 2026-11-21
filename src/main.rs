@@ -563,12 +563,12 @@ async fn rocket() -> _ {
             } else {
                 "full CRUD"
             };
-            println!("MCP endpoint enabled at /mcp ({mode}) with Entra authentication.");
+            println!("MCP endpoint enabled at /mcp ({mode}) with GitHub login and Doc Manager access tokens.");
         }
         None if public_introspect => {
             println!("MCP endpoint at /mcp: public introspection mode (no OAuth, no document access).");
         }
-        None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=entra to enable)."),
+        None => println!("MCP endpoint disabled (set OAUTH_PROVIDER=github to enable)."),
     }
 
     let has_oauth = oauth_config.is_some();
@@ -607,7 +607,8 @@ async fn rocket() -> _ {
     if has_oauth {
         server = server.mount(
             "/",
-            routes![oauth::protected_resource_metadata],
+            routes![oauth::protected_resource_metadata, oauth::authorization_server_metadata,
+                oauth::flow::authorize, oauth::flow::callback, oauth::exchange::token],
         );
     }
 

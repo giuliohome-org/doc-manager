@@ -16,10 +16,7 @@ object_store = { version = "0.14.2", default-features = false, features = ["azur
 # Builds the signed container-bootstrap request for object_store's AzureAuthorizer
 http = "1"
 futures = "0.3.31"
-# HTTPS requests for storage and MCP authorization server metadata
+# HTTPS requests to storage and the GitHub OAuth service
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-jsonwebtoken = { version = "12.0.0", default-features = false, features = ["aws_lc_rs"] }
 base64 = "0.22"
-
-[dev-dependencies]
 aws-lc-rs = "1"
