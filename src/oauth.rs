@@ -62,6 +62,9 @@ pub struct OAuthConfig {
     github_token: String,
     github_user: String,
     http: Client,
+    // A second connector that authenticates with its own GitHub OAuth client.
+    // It has its own AEAD context, so its grants never open under the first.
+    second: Option<Box<OAuthConfig>>,
 }
 
 #[derive(Clone, Copy)]
@@ -106,20 +109,56 @@ impl OAuthConfig {
         }
         let required =
             |name| env::var(name).map_err(|_| format!("{name} is required for MCP OAuth"));
-        let additional = match env::var("OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI") {
-            Ok(uri) => Some(uri),
-            Err(env::VarError::NotPresent) => None,
-            Err(_) => return Err("invalid OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI".into()),
+        let optional = |name: &str| match env::var(name) {
+            Ok(value) => Ok(Some(value).filter(|value| !value.is_empty())),
+            Err(env::VarError::NotPresent) => Ok(None),
+            Err(_) => Err(format!("invalid {name}")),
         };
-        Self::new(
-            &required("OAUTH_PUBLIC_BASE_URL")?,
+        let base = required("OAUTH_PUBLIC_BASE_URL")?;
+        let users = required("OAUTH_GITHUB_USER_IDS")?;
+        let key = required("OAUTH_TOKEN_KEY")?;
+        let first = Self::new(
+            &base,
             &required("OAUTH_GITHUB_CLIENT_ID")?,
             &required("OAUTH_CONNECTOR_REDIRECT_URI")?,
-            additional.as_deref(),
-            &required("OAUTH_GITHUB_USER_IDS")?,
-            &required("OAUTH_TOKEN_KEY")?,
-        )
-        .map(Some)
+            optional("OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI")?.as_deref(),
+            &users,
+            &key,
+        )?;
+        let second = match (
+            optional("OAUTH_SECOND_GITHUB_CLIENT_ID")?,
+            optional("OAUTH_SECOND_CONNECTOR_REDIRECT_URI")?,
+        ) {
+            (None, None) => return Ok(Some(first)),
+            (Some(client), Some(redirect)) => Self::new(
+                &base,
+                &client,
+                &redirect,
+                optional("OAUTH_SECOND_CONNECTOR_ADDITIONAL_REDIRECT_URI")?.as_deref(),
+                &users,
+                &key,
+            )?,
+            _ => return Err("OAUTH_SECOND_GITHUB_CLIENT_ID and OAUTH_SECOND_CONNECTOR_REDIRECT_URI must be set together".into()),
+        };
+        first.with_second_client(second).map(Some)
+    }
+
+    fn with_second_client(mut self, second: Self) -> Result<Self, String> {
+        if second.client_id == self.client_id {
+            return Err("OAUTH_SECOND_GITHUB_CLIENT_ID must differ from OAUTH_GITHUB_CLIENT_ID; use OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI for a connector sharing the client".into());
+        }
+        self.second = Some(Box::new(second));
+        Ok(self)
+    }
+
+    fn clients(&self) -> impl Iterator<Item = &Self> {
+        std::iter::once(self).chain(self.second.as_deref())
+    }
+
+    // The public client ID selects the connector. Everything sealed afterwards
+    // is bound to that connector's own client ID and callbacks.
+    fn client(&self, id: &str) -> Option<&Self> {
+        self.clients().find(|client| client.client_id == id)
     }
 
     fn new(
@@ -179,6 +218,7 @@ impl OAuthConfig {
             github_authorize: "https://github.com/login/oauth/authorize".into(),
             github_token: "https://github.com/login/oauth/access_token".into(),
             github_user: "https://api.github.com/user".into(),
+            second: None,
         })
     }
 
@@ -262,8 +302,9 @@ impl OAuthConfig {
 
     pub fn validate_bearer(&self, token: &str) -> Result<(), AuthError> {
         let access: Access = self
-            .open("access", token)
-            .map_err(|_| AuthError::Unauthorized)?;
+            .clients()
+            .find_map(|client| client.open("access", token).ok())
+            .ok_or(AuthError::Unauthorized)?;
         if !self.allowed_ids.contains(&access.user_id) {
             return Err(AuthError::Forbidden);
         }

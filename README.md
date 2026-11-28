@@ -62,6 +62,11 @@ plaintext = "shareable with Claude".
    connector. Set `OAUTH_GITHUB_CLIENT_ID` to the public client ID of the
    existing OAuth App. The connector keeps its client ID and secret. During
    token exchange Doc Manager submits those credentials to GitHub over HTTPS.
+   A second connector that has its own GitHub OAuth App (for example Claude
+   next to ChatGPT) is registered with `OAUTH_SECOND_GITHUB_CLIENT_ID` and
+   `OAUTH_SECOND_CONNECTOR_REDIRECT_URI`. Point that app's callback at the
+   same `<origin>/mcp/oauth/callback`. Tokens issued to one client are not
+   valid for the other client's grants.
 3. Set `OAUTH_GITHUB_USER_IDS` to the numeric IDs of the GitHub accounts that
    may open the vault. Generate `OAUTH_TOKEN_KEY` from 32 cryptographically
    random bytes encoded in standard base64. Supply it to every replica through
@@ -149,6 +154,9 @@ sudo ctr t start doc-manager
 | `OAUTH_GITHUB_CLIENT_ID`      | with `OAUTH_PROVIDER`   | Public client ID of the connector's GitHub OAuth App |
 | `OAUTH_CONNECTOR_REDIRECT_URI` | with `OAUTH_PROVIDER`  | Exact callback URL for the connector |
 | `OAUTH_CONNECTOR_ADDITIONAL_REDIRECT_URI` | optional | Second exact callback for a connector sharing this GitHub OAuth client. Copy the URI displayed by that connector. |
+| `OAUTH_SECOND_GITHUB_CLIENT_ID` | optional | Public client ID of a second connector's own GitHub OAuth App. Requires `OAUTH_SECOND_CONNECTOR_REDIRECT_URI`. |
+| `OAUTH_SECOND_CONNECTOR_REDIRECT_URI` | with `OAUTH_SECOND_GITHUB_CLIENT_ID` | Exact callback URL for the second connector, e.g. `https://claude.ai/api/mcp/auth_callback` |
+| `OAUTH_SECOND_CONNECTOR_ADDITIONAL_REDIRECT_URI` | optional | Second exact callback for the second connector's client |
 | `OAUTH_GITHUB_USER_IDS`       | with `OAUTH_PROVIDER`   | Comma-separated list of allowed numeric GitHub user IDs |
 | `OAUTH_TOKEN_KEY`             | with `OAUTH_PROVIDER`   | Standard base64 encoding of a shared 32-byte random encryption key |
 | `MCP_READ_ONLY`               | no (default false)      | When `true`/`1`/`yes`, hides create/update MCP tools                                             |

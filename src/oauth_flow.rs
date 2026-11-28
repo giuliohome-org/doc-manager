@@ -128,10 +128,10 @@ fn cookie_name(upstream_verifier: &str) -> String {
 fn start(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> RedirectResult {
     let p = parameters(uri).inspect_err(|_| auth_event!("authorize.invalid_query"))?;
     let param = |key: &str| p.get(key).copied();
-    if param("client_id") != Some(config.client_id.as_str()) {
+    let Some(config) = param("client_id").and_then(|id| config.client(id)) else {
         auth_event!("authorize.client_mismatch");
         return Err(Status::BadRequest);
-    }
+    };
     let Some(registered) = config
         .redirects()
         .find(|r| param("redirect_uri") == Some(r.uri))
@@ -234,13 +234,14 @@ fn finish(config: &OAuthConfig, uri: &Origin<'_>, cookies: &CookieJar<'_>) -> Re
         .get("state")
         .ok_or(Status::BadRequest)
         .inspect_err(|_| auth_event!("callback.missing_state"))?;
-    let (registered, transaction) = config
-        .redirects()
-        .find_map(|registered| {
-            config
+    let (config, registered, transaction) = config
+        .clients()
+        .flat_map(|client| client.redirects().map(move |registered| (client, registered)))
+        .find_map(|(client, registered)| {
+            client
                 .open::<Transaction>(&registered.purpose("state"), state)
                 .ok()
-                .map(|tx| (registered, tx))
+                .map(|tx| (client, registered, tx))
         })
         .ok_or(Status::BadRequest)
         .inspect_err(|_| auth_event!("callback.invalid_state"))?;

@@ -103,7 +103,9 @@ impl Params {
             .ok_or_else(|| error("invalid_request"))
     }
 
-    fn secret(&self, basic: Option<&str>, expected_id: &str) -> Result<String, TokenResponse> {
+    // Returns the presented client ID and secret. The caller selects the
+    // registered client; GitHub verifies the secret during the exchange.
+    fn credentials(&self, basic: Option<&str>) -> Result<(String, String), TokenResponse> {
         let (client_id, secret) = if let Some(header) = basic {
             if self.get("client_secret").is_some() {
                 return Err(error("invalid_request"));
@@ -139,10 +141,10 @@ impl Params {
                 self.get("client_secret").unwrap_or_default().to_owned(),
             )
         };
-        if client_id != expected_id || secret.is_empty() {
+        if client_id.is_empty() || secret.is_empty() {
             return Err(error("invalid_client"));
         }
-        Ok(secret)
+        Ok((client_id, secret))
     }
 }
 
@@ -178,7 +180,10 @@ async fn exchange(
     params: Params,
     basic: Option<&str>,
 ) -> Result<TokenResponse, TokenResponse> {
-    let secret = params.secret(basic, &config.client_id)?;
+    let (client_id, secret) = params.credentials(basic)?;
+    let config = config
+        .client(&client_id)
+        .ok_or_else(|| error("invalid_client"))?;
     if params.get("resource") != Some(&config.resource()) {
         if params.get("resource").is_some() {
             auth_event!("token.wrong_resource");
@@ -391,22 +396,24 @@ mod tests {
         assert!(Params::parse("resource=a&%72esource=b").is_err());
         let empty = Params::parse("").ok().unwrap();
         let basic = format!("Basic {}", STANDARD.encode("client:p%3A%2Bb"));
+        let presented = |id: &str, secret: &str| Some((id.to_owned(), secret.to_owned()));
         assert_eq!(
-            empty.secret(Some(&basic), "client").ok().as_deref(),
-            Some("p:+b")
+            empty.credentials(Some(&basic)).ok(),
+            presented("client", "p:+b")
         );
+        assert!(empty.credentials(None).is_err());
         let repeated = Params::parse("client_id=client").ok().unwrap();
         assert_eq!(
-            repeated.secret(Some(&basic), "client").ok().as_deref(),
-            Some("p:+b")
+            repeated.credentials(Some(&basic)).ok(),
+            presented("client", "p:+b")
         );
+        assert!(repeated.credentials(None).is_err());
         let conflicting = Params::parse("client_id=another-client").ok().unwrap();
-        assert!(conflicting.secret(Some(&basic), "client").is_err());
-        assert!(repeated.secret(Some(&basic), "another-client").is_err());
+        assert!(conflicting.credentials(Some(&basic)).is_err());
         let body = Params::parse("client_id=client&client_secret=other")
             .ok()
             .unwrap();
-        assert!(body.secret(Some(&basic), "client").is_err());
-        assert!(body.secret(None, "another-client").is_err());
+        assert!(body.credentials(Some(&basic)).is_err());
+        assert_eq!(body.credentials(None).ok(), presented("client", "other"));
     }
 }
